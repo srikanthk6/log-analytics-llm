@@ -9,7 +9,11 @@ import signal
 import threading
 import argparse
 import logging
+import multiprocessing
 from multiprocessing import Process
+
+# Set multiprocessing start method to 'spawn'
+multiprocessing.set_start_method("spawn", force=True)
 
 # Add the project root to the Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))

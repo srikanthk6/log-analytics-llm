@@ -58,26 +58,36 @@ class LogFileHandler(FileSystemEventHandler):
             # Skip non-log files
             if not self._is_log_file(file_path):
                 return
-                
+
             # Get last known position or start from beginning
             last_pos = self.file_positions.get(file_path, 0)
-            
+
             with open(file_path, 'r') as f:
                 # Seek to last known position
                 f.seek(last_pos)
-                
+
                 # Read new lines
                 new_content = f.read()
-                
+
                 # Update position
                 self.file_positions[file_path] = f.tell()
-                
-                # Process each new line
+
+                # Batch process new lines for LLM efficiency
                 if new_content:
-                    for line in new_content.splitlines():
-                        if line.strip():
-                            self._process_log_line(line, file_path)
-        
+                    lines = [line for line in new_content.splitlines() if line.strip()]
+                    if lines:
+                        source = os.path.basename(file_path)
+                        # Use batch_process_logs, but override semantic_template with RAG-enabled version
+                        processed_logs = self.logai_handler.batch_process_logs(lines, source)
+                        for processed_log in processed_logs:
+                            # Use RAG-enabled template extraction
+                            rag_template = self.logai_handler.get_llm_template_with_rag(
+                                processed_log["message"], self.es_handler, context_count=10)
+                            processed_log["semantic_template"] = rag_template
+                            self.es_handler.index_log(processed_log)
+                            logger.debug(f"Log: {processed_log['message']} | Anomaly Score: {processed_log['anomaly_score']}")
+                            if processed_log['anomaly_score'] > ANOMALY_THRESHOLD:
+                                logger.warning(f"ANOMALY DETECTED: {processed_log['message']} (score: {processed_log['anomaly_score']:.4f})")
         except Exception as e:
             logger.error(f"Error processing log file {file_path}: {e}")
     

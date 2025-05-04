@@ -5,3 +5,4 @@ watchdog
 pydantic
 numpy
 pytest
+sentence-transformers

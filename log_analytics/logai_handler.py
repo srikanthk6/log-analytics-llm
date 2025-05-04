@@ -22,6 +22,9 @@ class LogAIHandler:
         """Initialize LogAI components"""
         self.window_size = window_size
         self.template_cache = {}
+        from sentence_transformers import SentenceTransformer
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.embedding_dim = 384
         self._setup_components()
         
     def _setup_components(self) -> None:
@@ -91,6 +94,54 @@ class LogAIHandler:
             logger.warning(f"LLM template extraction failed, using raw message: {e}")
             self.template_cache[message] = message
             return message
+
+    def get_recent_logs_for_context(self, es_handler, count=10):
+        """
+        Retrieve recent logs from Elasticsearch for use as context in LLM prompts.
+        """
+        try:
+            logs = es_handler.get_recent_logs(size=count)
+            # Extract just the message or template for context
+            return [log['_source']['message'] for log in logs if '_source' in log and 'message' in log['_source']]
+        except Exception as e:
+            logger.warning(f"Failed to retrieve recent logs for RAG context: {e}")
+            return []
+
+    def get_llm_template_with_rag(self, message: str, es_handler, context_count=10) -> str:
+        """
+        Use LLM to generate a semantic template for a log message, with RAG context and caching.
+        """
+        if message in self.template_cache:
+            return self.template_cache[message]
+        import requests
+        # Retrieve recent logs for context
+        context_logs = self.get_recent_logs_for_context(es_handler, count=context_count)
+        context_str = "\n".join(context_logs)
+        prompt = (
+            f"You are an expert log analyst. Here are some recent log messages for context:\n"
+            f"{context_str}\n"
+            f"Now, extract a log template for the following log message. Replace all variable parts (numbers, IDs, paths, etc.) with <*>. Only output the template string.\nLog: {message}"
+        )
+        try:
+            response = requests.post(
+                'http://localhost:11434/api/generate',
+                json={
+                    'model': 'codellama:instruct',
+                    'prompt': prompt,
+                    'stream': False
+                },
+                timeout=120
+            )
+            data = response.json()
+            template = data['response'].strip().replace('\n', ' ')
+            if template.startswith('"') and template.endswith('"'):
+                template = template[1:-1]
+            self.template_cache[message] = template
+            return template
+        except Exception as e:
+            logger.warning(f"LLM template extraction with RAG failed, using raw message: {e}")
+            self.template_cache[message] = message
+            return message
         
     def process_log(self, log_line: str, source: str = "application") -> Dict[str, Any]:
         """
@@ -153,7 +204,7 @@ class LogAIHandler:
                 "message": log_line,
                 "source": source,
                 "level": "ERROR",
-                "log_vector": np.zeros(768).tolist(),  # Empty vector
+                "log_vector": np.zeros(384).tolist(),  # Empty vector
                 "anomaly_score": 0.0,
                 "semantic_template": log_line
             }
@@ -209,55 +260,20 @@ class LogAIHandler:
     
     def _generate_vector_embedding(self, message: str) -> np.ndarray:
         """
-        Generate vector embedding for the log message using Ollama LLM.
-        Falls back to the old method if the LLM is unavailable.
+        Generate vector embedding for the log message using all-MiniLM-L6-v2.
         """
-        import requests
-        vector_size = 768  # Default size for fallback
-        max_retries = 3
-        prompt = (
-            f"Generate a Python list of exactly 768 float values (no extra text, no newlines, just the list) "
-            f"as a vector embedding for this log message: {message}"
-        )
-        for attempt in range(max_retries):
-            try:
-                response = requests.post(
-                    'http://localhost:11434/api/generate',
-                    json={
-                        'model': 'codellama:instruct',
-                        'prompt': prompt,
-                        'stream': False
-                    },
-                    timeout=120
-                )
-                data = response.json()
-                import ast
-                s = data['response']
-                start = s.find('[')
-                end = s.rfind(']')
-                if start == -1 or end == -1 or end <= start:
-                    logger.warning(f"LLM did not return a valid list. Raw response: {s}")
-                    continue
-                embedding_str = s[start:end+1]
-                embedding = ast.literal_eval(embedding_str)
-                embedding = np.array(embedding, dtype=np.float32)
-                if embedding.shape[0] != vector_size:
-                    logger.warning(f"LLM embedding size {embedding.shape[0]} != {vector_size}. Raw response: {s}")
-                    continue
-                norm = np.linalg.norm(embedding)
-                if norm > 0:
-                    embedding = embedding / norm
-                return embedding
-            except Exception as e:
-                logger.warning(f"LLM embedding attempt {attempt+1} failed: {e}")
-        logger.warning("Falling back to hash-based embedding due to repeated LLM errors.")
-        vector = np.zeros(vector_size)
-        for i, char in enumerate(message):
-            vector[i % vector_size] += ord(char) / 255.0
-        norm = np.linalg.norm(vector)
-        if norm > 0:
-            vector = vector / norm
-        return vector
+        try:
+            embedding = self.embedding_model.encode(message, show_progress_bar=False, normalize_embeddings=True)
+            return np.array(embedding, dtype=np.float32)
+        except Exception as e:
+            logger.warning(f"Falling back to hash-based embedding due to embedding model error: {e}")
+            vector = np.zeros(self.embedding_dim)
+            for i, char in enumerate(message):
+                vector[i % self.embedding_dim] += ord(char) / 255.0
+            norm = np.linalg.norm(vector)
+            if norm > 0:
+                vector = vector / norm
+            return vector
     
     def _detect_anomalies(self) -> float:
         """
@@ -303,7 +319,7 @@ class LogAIHandler:
 
             # Fix: If each element is a numpy array, stack them
             if X_array.shape[1] == 1 and isinstance(X_array[0, 0], np.ndarray):
-                logger.info("Stacking feature vectors from array of arrays to 2D matrix.")
+                logger.debug("Stacking feature vectors from array of arrays to 2D matrix.")
                 X_array = np.vstack(X_array[:, 0])
 
             # Remove detailed element logging for cleaner logs
@@ -364,3 +380,34 @@ class LogAIHandler:
             logger.exception(f"Error in anomaly detection: {e}")
 
         return 0.0
+
+    def batch_process_logs(self, log_lines: list, source: str = "application") -> list:
+        """
+        Batch process log lines: group by template, call LLM once per group, cache result.
+        Returns a list of processed log dicts.
+        """
+        from collections import defaultdict
+        processed_logs = []
+        template_groups = defaultdict(list)
+        # Step 1: Group logs by template hash (using Drain or simple hash)
+        for log_line in log_lines:
+            # Use Drain parser to get template (or fallback to message)
+            try:
+                _, _, message = self._extract_log_metadata(log_line)
+                cluster = self.parser.match(message)
+                template = cluster.template if cluster else message
+            except Exception:
+                template = log_line
+            template_hash = hash(template)
+            template_groups[template_hash].append((log_line, template))
+        # Step 2: For each group, call LLM once and cache result
+        for group in template_groups.values():
+            # Use the first log's message as representative
+            log_line, template = group[0]
+            semantic_template = self.get_llm_template(template)
+            # Step 3: Process all logs in the group with the cached template
+            for log_line, _ in group:
+                result = self.process_log(log_line, source)
+                result["semantic_template"] = semantic_template  # Overwrite with batched/cached template
+                processed_logs.append(result)
+        return processed_logs

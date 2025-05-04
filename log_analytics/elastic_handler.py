@@ -41,7 +41,7 @@ class ElasticsearchHandler:
                         "message": {"type": "text"},
                         "log_vector": {
                             "type": "dense_vector",
-                            "dims": 768,  # Default dimension for most embeddings
+                            "dims": 384,  # Updated for all-MiniLM-L6-v2
                             "index": True,
                             "similarity": "cosine"
                         },
