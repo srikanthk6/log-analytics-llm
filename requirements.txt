@@ -1,0 +1,7 @@
+logai
+elasticsearch
+python-dotenv
+watchdog
+pydantic
+numpy
+pytest
