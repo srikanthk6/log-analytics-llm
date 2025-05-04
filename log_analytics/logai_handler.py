@@ -21,6 +21,7 @@ class LogAIHandler:
     def __init__(self, window_size: int = 100):
         """Initialize LogAI components"""
         self.window_size = window_size
+        self.template_cache = {}
         self._setup_components()
         
     def _setup_components(self) -> None:
@@ -62,6 +63,35 @@ class LogAIHandler:
         # Storage for log data
         self.logs_buffer = []
         
+    def get_llm_template(self, message: str) -> str:
+        """
+        Use LLM to generate a semantic template for a log message, with caching.
+        """
+        if message in self.template_cache:
+            return self.template_cache[message]
+        import requests
+        try:
+            response = requests.post(
+                'http://localhost:11434/api/generate',
+                json={
+                    'model': 'codellama:instruct',
+                    'prompt': f"Extract a log template for the following log message. Replace all variable parts (numbers, IDs, paths, etc.) with <*>. Only output the template string.\nLog: {message}",
+                    'stream': False
+                },
+                timeout=10
+            )
+            data = response.json()
+            template = data['response'].strip().replace('\n', ' ')
+            # Basic cleanup: remove quotes if present
+            if template.startswith('"') and template.endswith('"'):
+                template = template[1:-1]
+            self.template_cache[message] = template
+            return template
+        except Exception as e:
+            logger.warning(f"LLM template extraction failed, using raw message: {e}")
+            self.template_cache[message] = message
+            return message
+        
     def process_log(self, log_line: str, source: str = "application") -> Dict[str, Any]:
         """
         Process a single log line
@@ -97,6 +127,7 @@ class LogAIHandler:
             # If buffer is large enough, perform anomaly detection
             anomaly_score = 0.0
             log_vector = self._generate_vector_embedding(message)
+            semantic_template = self.get_llm_template(message)
             
             if len(self.logs_buffer) >= self.window_size:
                 anomaly_score = self._detect_anomalies()
@@ -110,7 +141,8 @@ class LogAIHandler:
                 "source": source,
                 "level": level,
                 "log_vector": log_vector.tolist(),
-                "anomaly_score": float(anomaly_score)
+                "anomaly_score": float(anomaly_score),
+                "semantic_template": semantic_template
             }
             
         except Exception as e:
@@ -122,7 +154,8 @@ class LogAIHandler:
                 "source": source,
                 "level": "ERROR",
                 "log_vector": np.zeros(768).tolist(),  # Empty vector
-                "anomaly_score": 0.0
+                "anomaly_score": 0.0,
+                "semantic_template": log_line
             }
     
     def _extract_log_metadata(self, log_line: str) -> Tuple[str, str, str]:
@@ -176,25 +209,54 @@ class LogAIHandler:
     
     def _generate_vector_embedding(self, message: str) -> np.ndarray:
         """
-        Generate vector embedding for the log message
-        
-        In a real implementation, this would use a more sophisticated embedding model
-        For simplicity, we're using a basic approach here
+        Generate vector embedding for the log message using Ollama LLM.
+        Falls back to the old method if the LLM is unavailable.
         """
-        # Simple hashing-based vector as placeholder
-        # In production, use proper embedding models like transformers
-        vector_size = 768  # Common embedding dimension
+        import requests
+        vector_size = 768  # Default size for fallback
+        max_retries = 3
+        prompt = (
+            f"Generate a Python list of exactly 768 float values (no extra text, no newlines, just the list) "
+            f"as a vector embedding for this log message: {message}"
+        )
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    'http://localhost:11434/api/generate',
+                    json={
+                        'model': 'codellama:instruct',
+                        'prompt': prompt,
+                        'stream': False
+                    },
+                    timeout=120
+                )
+                data = response.json()
+                import ast
+                s = data['response']
+                start = s.find('[')
+                end = s.rfind(']')
+                if start == -1 or end == -1 or end <= start:
+                    logger.warning(f"LLM did not return a valid list. Raw response: {s}")
+                    continue
+                embedding_str = s[start:end+1]
+                embedding = ast.literal_eval(embedding_str)
+                embedding = np.array(embedding, dtype=np.float32)
+                if embedding.shape[0] != vector_size:
+                    logger.warning(f"LLM embedding size {embedding.shape[0]} != {vector_size}. Raw response: {s}")
+                    continue
+                norm = np.linalg.norm(embedding)
+                if norm > 0:
+                    embedding = embedding / norm
+                return embedding
+            except Exception as e:
+                logger.warning(f"LLM embedding attempt {attempt+1} failed: {e}")
+        logger.warning("Falling back to hash-based embedding due to repeated LLM errors.")
         vector = np.zeros(vector_size)
-        
-        # Simple hash-based encoding (for demonstration only)
         for i, char in enumerate(message):
             vector[i % vector_size] += ord(char) / 255.0
-            
-        # Normalize to unit length
         norm = np.linalg.norm(vector)
         if norm > 0:
             vector = vector / norm
-            
         return vector
     
     def _detect_anomalies(self) -> float:

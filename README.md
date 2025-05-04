@@ -229,6 +229,56 @@ def analyze_logs():
         return jsonify({"status": "error", "message": str(e)}), 500
 ```
 
+## Using LLMs in Log Analytics
+
+This project can be enhanced by integrating a local LLM, such as Ollama's `llama3.1:8b-instruct-fp16`, in several ways:
+
+1. **Log Message Embeddings**
+   - Use the LLM to generate semantic embeddings for log messages. These embeddings capture deeper meaning and context than traditional TF-IDF, improving anomaly detection and log clustering.
+   - Example: Replace or augment the `_generate_vector_embedding` method in `logai_handler.py` to call the Ollama model and use its output as the log vector.
+
+2. **Anomaly Explanation**
+   - When an anomaly is detected, use the LLM to generate a human-readable explanation of why the log is unusual compared to recent logs.
+   - Example: In `log_monitor.py`, after detecting an anomaly, send the anomalous log and recent normal logs to the LLM and display its explanation.
+
+3. **Log Summarization**
+   - Use the LLM to summarize large volumes of logs, highlighting key events, trends, or issues.
+   - Example: Periodically send batches of logs to the LLM and store/display its summary.
+
+4. **Root Cause Analysis**
+   - Use the LLM to analyze sequences of logs and suggest possible root causes for detected anomalies or errors.
+
+5. **Natural Language Querying**
+   - Allow users to query logs using natural language (e.g., “Show me all errors from the payment service in the last hour”), and use the LLM to translate these queries into structured searches.
+
+6. **Log Classification and Tagging**
+   - Use the LLM to automatically classify log messages (e.g., error, warning, info) or tag them with relevant categories.
+
+### Integration Example with Ollama
+
+- Install Ollama and run the model locally:
+  ```sh
+  ollama run llama3.1:8b-instruct-fp16
+  ```
+- In your Python code, use an HTTP client (e.g., `requests`) to send prompts to the Ollama server and receive responses.
+- Example usage in `logai_handler.py`:
+  ```python
+  import requests
+  def get_llm_embedding(log_message):
+      response = requests.post(
+          'http://localhost:11434/api/generate',
+          json={
+              'model': 'llama3.1:8b-instruct-fp16',
+              'prompt': f"Generate a vector embedding for this log: {log_message}",
+              'stream': False
+          }
+      )
+      return response.json()['response']
+  ```
+- Replace the vector generation or add LLM-based features as needed.
+
+These enhancements can make the log analytics system more powerful, interpretable, and user-friendly.
+
 ## Project Structure
 
 ```
