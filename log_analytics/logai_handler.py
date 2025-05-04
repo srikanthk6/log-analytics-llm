@@ -7,46 +7,15 @@ import pandas as pd
 from typing import Dict, List, Any, Tuple
 from datetime import datetime
 
-# Update imports with correct class names from LogAI and include parameter classes
+# Update imports with correct class names from LogAI
 from logai.dataloader.data_model import LogRecordObject
 from logai.preprocess.preprocessor import Preprocessor, PreprocessorConfig
 from logai.algorithms.parsing_algo.drain import Drain, DrainParams
 from logai.algorithms.vectorization_algo.tfidf import TfIdf, TfIdfParams
-# Import scikit-learn's IsolationForest directly for our custom detector
-from sklearn.ensemble import IsolationForest
+# Import LogAI's native IsolationForestDetector and its params class
+from logai.algorithms.anomaly_detection_algo.isolation_forest import IsolationForestDetector, IsolationForestParams
 
 logger = logging.getLogger(__name__)
-
-# Custom detector class to bypass LogAI's IsolationForestDetector issue
-class CustomIsolationForestDetector:
-    """Simple wrapper for scikit-learn's IsolationForest for anomaly detection"""
-    def __init__(self, n_estimators=100, contamination=0.05):
-        self.model = IsolationForest(
-            n_estimators=n_estimators,
-            contamination=contamination,
-            random_state=42,
-            warm_start=False,  # Explicitly set to False
-            n_jobs=-1  # Use all available cores
-        )
-        self.is_fitted = False
-    
-    def fit(self, X):
-        """Fit the model with the data X"""
-        self.model.fit(X)
-        self.is_fitted = True
-        return self
-    
-    def predict(self, X):
-        """Predict if observations are anomalies or not"""
-        if not self.is_fitted:
-            raise ValueError("Model not fitted. Call fit() first.")
-        return self.model.predict(X)
-    
-    def decision_function(self, X):
-        """Compute the anomaly score for each observation"""
-        if not self.is_fitted:
-            raise ValueError("Model not fitted. Call fit() first.")
-        return self.model.decision_function(X)
 
 class LogAIHandler:
     def __init__(self, window_size: int = 100):
@@ -76,11 +45,19 @@ class LogAIHandler:
         preprocessor_config = PreprocessorConfig()
         self.preprocessor = Preprocessor(config=preprocessor_config)
         
-        # Use our custom detector instead of LogAI's IsolationForestDetector
-        self.anomaly_detector = CustomIsolationForestDetector(
+        # Create IsolationForestParams object for LogAI's detector
+        # Make sure all parameters have the correct type - warm_start must be boolean
+        isolation_forest_params = IsolationForestParams(
             n_estimators=100,
-            contamination=0.05
+            contamination=0.05,
+            random_state=42,
+            warm_start=False,  # Explicitly set as boolean, not integer
+            bootstrap=False,
+            n_jobs=None,
+            verbose=False
         )
+        # Pass params object to LogAI's IsolationForestDetector
+        self.anomaly_detector = IsolationForestDetector(params=isolation_forest_params)
         
         # Storage for log data
         self.logs_buffer = []
@@ -222,7 +199,7 @@ class LogAIHandler:
     
     def _detect_anomalies(self) -> float:
         """
-        Detect anomalies in the current log buffer using our custom detector.
+        Detect anomalies in the current log buffer using LogAI's IsolationForestDetector.
 
         Returns:
             Anomaly score for the latest log (0 for normal, 1 for anomaly).
@@ -231,7 +208,7 @@ class LogAIHandler:
             if len(self.logs_buffer) < 10:  # Need minimum data for detection
                 return 0.0
 
-            # Convert buffer to DataFrame for LogAI
+            # Convert buffer to DataFrame
             df = pd.DataFrame([{
                 'timestamp': log_record.timestamp.iloc[0, 0] if not log_record.timestamp.empty else "",
                 'message': log_record.body.iloc[0, 0] if not log_record.body.empty else "",
@@ -252,58 +229,72 @@ class LogAIHandler:
             self.feature_extractor.fit(templates_series)
             X = self.feature_extractor.transform(templates_series)
 
-            # Convert to numpy array for scikit-learn
-            # First check if X is a DataFrame or Series
-            if isinstance(X, (pd.DataFrame, pd.Series)):
-                # Handle case where X might contain lists or arrays
-                try:
-                    # Try direct numpy conversion
-                    X_array = np.vstack([np.array(x).flatten() for x in X])
-                except (ValueError, TypeError):
-                    # If that fails, try to extract values one by one
-                    rows = []
-                    for x in X:
-                        if isinstance(x, (list, np.ndarray)):
-                            rows.append(np.array(x).flatten())
-                        else:
-                            # If a single scalar value, make it a 1D array
-                            rows.append(np.array([x]))
-                    
-                    # Stack rows of potentially different lengths
-                    # Pad with zeros if necessary
-                    max_len = max(len(row) for row in rows)
-                    X_array = np.zeros((len(rows), max_len))
-                    for i, row in enumerate(rows):
-                        X_array[i, :len(row)] = row
-            
-            # If X is a scipy sparse matrix, convert to dense
-            elif hasattr(X, 'toarray'):
+            # Convert to format expected by LogAI's detector
+            if hasattr(X, 'toarray'):
                 X_array = X.toarray()
-            # If X is already a numpy array
-            elif isinstance(X, np.ndarray):
-                X_array = X
             else:
-                # As a fallback, try direct conversion
                 X_array = np.array(X)
             
             # Ensure we have a 2D array with shape (n_samples, n_features)
             if X_array.ndim == 1:
                 X_array = X_array.reshape(-1, 1)
 
-            # Check if we have valid data before proceeding
-            if X_array.size == 0 or np.any(np.isnan(X_array)):
-                logger.warning("Invalid data for anomaly detection. Using default score.")
+            # Fix: If each element is a numpy array, stack them
+            if X_array.shape[1] == 1 and isinstance(X_array[0, 0], np.ndarray):
+                logger.info("Stacking feature vectors from array of arrays to 2D matrix.")
+                X_array = np.vstack(X_array[:, 0])
+
+            # Remove detailed element logging for cleaner logs
+
+            # Check for sequences in the array (keep this for safety, but only log if found)
+            for i in range(X_array.shape[0]):
+                for j in range(X_array.shape[1]):
+                    if isinstance(X_array[i, j], (list, np.ndarray, dict)):
+                        logger.error(f"Problematic element at [{i},{j}]: type={type(X_array[i, j])}, value={X_array[i, j]}")
+
+            # Explicitly convert to float to ensure numeric dtype
+            try:
+                X_array = X_array.astype(float)
+            except Exception as e:
+                logger.error(f"Failed to convert feature array to float: {e}")
                 return 0.0
 
-            # Detect anomalies with our custom detector
-            self.anomaly_detector.fit(X_array)
-            predictions = self.anomaly_detector.predict(X_array)
+            # Create a proper DataFrame with numeric data only
+            feature_df = pd.DataFrame(X_array)
 
-            # Get prediction for the latest log entry (last in the buffer)
-            if predictions is not None and len(predictions) > 0:
-                latest_prediction = predictions[-1]
-                # Convert prediction label to a score (1 for anomaly, 0 for normal)
-                anomaly_score = 1.0 if latest_prediction == -1 else 0.0
+            # Log DataFrame head and dtypes for debugging
+            logger.debug(f"Feature DataFrame head:\n{feature_df.head()}")
+            logger.debug(f"Feature DataFrame dtypes:\n{feature_df.dtypes}")
+
+            # Check for object dtype or any cell with a sequence
+            if any(feature_df.dtypes == 'object'):
+                logger.error("Feature DataFrame contains non-numeric columns. Aborting anomaly detection.")
+                return 0.0
+            for col in feature_df.columns:
+                if feature_df[col].apply(lambda x: isinstance(x, (list, np.ndarray, dict))).any():
+                    logger.error(f"Feature DataFrame column {col} contains sequences. Aborting anomaly detection.")
+                    return 0.0
+
+            # Use LogAI's detector with proper error handling
+            self.anomaly_detector.fit(feature_df)
+            result = self.anomaly_detector.predict(feature_df)
+            
+            # Get prediction for the latest log entry
+            if len(result) > 0:
+                # Get the prediction for the latest log
+                if isinstance(result, pd.DataFrame):
+                    latest_prediction = result.iloc[-1]
+                    # Check if it's a Series with multiple items
+                    if isinstance(latest_prediction, pd.Series) and len(latest_prediction) > 0:
+                        anomaly_score = 1.0 if latest_prediction.iloc[0] < 0 else 0.0
+                    else:
+                        # Direct access if it's a simple value
+                        anomaly_score = 1.0 if latest_prediction < 0 else 0.0
+                else:
+                    # Handle numpy array case
+                    latest_prediction = result[-1]
+                    anomaly_score = 1.0 if latest_prediction < 0 else 0.0
+                    
                 return anomaly_score
 
         except Exception as e:
