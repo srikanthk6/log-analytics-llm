@@ -64,7 +64,7 @@ class LogAIHandler:
         embedding_model_name = embedding_model_name or os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
         self.embedding_model = SentenceTransformer(embedding_model_name)
         self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
-        self.llm_model_name = llm_model_name or os.getenv("LLM_MODEL", "codellama:instruct")
+        self.llm_model_name = llm_model_name or os.getenv("LLM_MODEL", "llama3.1")
         self._setup_components()
         
     def _setup_components(self) -> None:
@@ -124,6 +124,10 @@ class LogAIHandler:
         """
         Use LLM to generate a semantic template for a log message, with caching.
         """
+        # Check Elasticsearch cache first
+        cached = self.es_handler.get_cached_template(message) if hasattr(self, 'es_handler') else None
+        if cached:
+            return cached
         if message in self.template_cache:
             return self.template_cache[message]
         import requests
@@ -142,6 +146,8 @@ class LogAIHandler:
             # Basic cleanup: remove quotes if present
             if template.startswith('"') and template.endswith('"'):
                 template = template[1:-1]
+            if hasattr(self, 'es_handler'):
+                self.es_handler.cache_template(message, template)
             self.template_cache[message] = template
             return template
         except Exception as e:
@@ -328,8 +334,14 @@ class LogAIHandler:
         """
         Generate vector embedding for the log message using the configured embedding model.
         """
+        # Check Elasticsearch cache first
+        cached = self.es_handler.get_cached_embedding(message) if hasattr(self, 'es_handler') else None
+        if cached:
+            return np.array(cached, dtype=np.float32)
         try:
             embedding = self.embedding_model.encode(message, show_progress_bar=False, normalize_embeddings=True)
+            if hasattr(self, 'es_handler'):
+                self.es_handler.cache_embedding(message, embedding.tolist())
             return np.array(embedding, dtype=np.float32)
         except Exception as e:
             logger.warning(f"Falling back to hash-based embedding due to embedding model error: {e}")
@@ -366,85 +378,85 @@ class LogAIHandler:
                 cluster = self.parser.match(message)
                 templates.append(cluster.template if cluster else message)
 
-            # Convert templates list to a Pandas Series before passing to transform
+            # Filter out empty or trivial templates
+            templates = [t for t in templates if isinstance(t, str) and t.strip() and t.strip().lower() not in {"", "the", "a", "an", "and", "or", "is", "are", "was", "were"}]
+            if not templates:
+                logger.warning("No valid templates for TF-IDF. Skipping anomaly detection for this batch.")
+                return 0.0
+
             templates_series = pd.Series(templates)
 
-            # Create feature vectors using LogAI's TF-IDF
-            self.feature_extractor.fit(templates_series)
-            X = self.feature_extractor.transform(templates_series)
-
-            # Convert to format expected by LogAI's detector
-            if hasattr(X, 'toarray'):
-                X_array = X.toarray()
-            else:
-                X_array = np.array(X)
-            
-            # Ensure we have a 2D array with shape (n_samples, n_features)
-            if X_array.ndim == 1:
-                X_array = X_array.reshape(-1, 1)
-
-            # Fix: If each element is a numpy array, stack them
-            if X_array.shape[1] == 1 and isinstance(X_array[0, 0], np.ndarray):
-                logger.debug("Stacking feature vectors from array of arrays to 2D matrix.")
-                X_array = np.vstack(X_array[:, 0])
-
-            # Remove detailed element logging for cleaner logs
-
-            # Check for sequences in the array (keep this for safety, but only log if found)
-            for i in range(X_array.shape[0]):
-                for j in range(X_array.shape[1]):
-                    if isinstance(X_array[i, j], (list, np.ndarray, dict)):
-                        logger.error(f"Problematic element at [{i},{j}]: type={type(X_array[i, j])}, value={X_array[i, j]}")
-
-            # Explicitly convert to float to ensure numeric dtype
-            try:
-                X_array = X_array.astype(float)
-            except Exception as e:
-                logger.error(f"Failed to convert feature array to float: {e}")
-                return 0.0
-
-            # Create a proper DataFrame with numeric data only
-            feature_df = pd.DataFrame(X_array)
-
-            # Log DataFrame head and dtypes for debugging
-            logger.debug(f"Feature DataFrame head:\n{feature_df.head()}")
-            logger.debug(f"Feature DataFrame dtypes:\n{feature_df.dtypes}")
-
-            # Check for object dtype or any cell with a sequence
-            if any(feature_df.dtypes == 'object'):
-                logger.error("Feature DataFrame contains non-numeric columns. Aborting anomaly detection.")
-                return 0.0
-            for col in feature_df.columns:
-                if feature_df[col].apply(lambda x: isinstance(x, (list, np.ndarray, dict))).any():
-                    logger.error(f"Feature DataFrame column {col} contains sequences. Aborting anomaly detection.")
+            # --- Fit TF-IDF and IsolationForest only once ---
+            if not hasattr(self, '_tfidf_fitted') or not self._tfidf_fitted:
+                self.feature_extractor.fit(templates_series)
+                X = self.feature_extractor.transform(templates_series)
+                if hasattr(X, 'toarray'):
+                    X_array = X.toarray()
+                else:
+                    X_array = np.array(X)
+                if X_array.ndim == 1:
+                    X_array = X_array.reshape(-1, 1)
+                if X_array.shape[1] == 1 and isinstance(X_array[0, 0], np.ndarray):
+                    X_array = np.vstack(X_array[:, 0])
+                try:
+                    X_array = X_array.astype(float)
+                except Exception as e:
+                    logger.error(f"Failed to convert feature array to float: {e}")
                     return 0.0
+                feature_df = pd.DataFrame(X_array)
+                if any(feature_df.dtypes == 'object'):
+                    logger.error("Feature DataFrame contains non-numeric columns. Aborting anomaly detection.")
+                    return 0.0
+                for col in feature_df.columns:
+                    if feature_df[col].apply(lambda x: isinstance(x, (list, np.ndarray, dict))).any():
+                        logger.error(f"Feature DataFrame column {col} contains sequences. Aborting anomaly detection.")
+                        return 0.0
+                self.anomaly_detector.fit(feature_df)
+                self._anomaly_feature_count = feature_df.shape[1]
+                self._tfidf_fitted = True
+                logger.info(f"Fitted TF-IDF and IsolationForest with {self._anomaly_feature_count} features.")
+            else:
+                X = self.feature_extractor.transform(templates_series)
+                if hasattr(X, 'toarray'):
+                    X_array = X.toarray()
+                else:
+                    X_array = np.array(X)
+                if X_array.ndim == 1:
+                    X_array = X_array.reshape(-1, 1)
+                if X_array.shape[1] == 1 and isinstance(X_array[0, 0], np.ndarray):
+                    X_array = np.vstack(X_array[:, 0])
+                try:
+                    X_array = X_array.astype(float)
+                except Exception as e:
+                    logger.error(f"Failed to convert feature array to float: {e}")
+                    return 0.0
+                feature_df = pd.DataFrame(X_array)
+                if feature_df.shape[1] != self._anomaly_feature_count:
+                    logger.warning(f"Feature count mismatch for anomaly detection: expected {self._anomaly_feature_count}, got {feature_df.shape[1]}. Skipping anomaly detection for this batch.")
+                    return 0.0
+                if any(feature_df.dtypes == 'object'):
+                    logger.error("Feature DataFrame contains non-numeric columns. Aborting anomaly detection.")
+                    return 0.0
+                for col in feature_df.columns:
+                    if feature_df[col].apply(lambda x: isinstance(x, (list, np.ndarray, dict))).any():
+                        logger.error(f"Feature DataFrame column {col} contains sequences. Aborting anomaly detection.")
+                        return 0.0
+            # --- End fit-once logic ---
 
-            # Use LogAI's detector with proper error handling
-            self.anomaly_detector.fit(feature_df)
             result = self.anomaly_detector.predict(feature_df)
-            
-            # Get prediction for the latest log entry
             if len(result) > 0:
-                # Get the prediction for the latest log
                 if isinstance(result, pd.DataFrame):
                     latest_prediction = result.iloc[-1]
-                    # Check if it's a Series with multiple items
                     if isinstance(latest_prediction, pd.Series) and len(latest_prediction) > 0:
                         anomaly_score = 1.0 if latest_prediction.iloc[0] < 0 else 0.0
                     else:
-                        # Direct access if it's a simple value
                         anomaly_score = 1.0 if latest_prediction < 0 else 0.0
                 else:
-                    # Handle numpy array case
                     latest_prediction = result[-1]
                     anomaly_score = 1.0 if latest_prediction < 0 else 0.0
-                    
                 return anomaly_score
-
         except Exception as e:
-            # Log the full traceback for better debugging
             logger.exception(f"Error in anomaly detection: {e}")
-
         return 0.0
 
     def batch_process_logs(self, log_lines: list, source: str = "application") -> list:

@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from log_analytics.config.config import (
     ELASTICSEARCH_HOST,
@@ -77,24 +78,33 @@ class LogFileHandler(FileSystemEventHandler):
                     lines = [line for line in new_content.splitlines() if line.strip()]
                     if lines:
                         source = os.path.basename(file_path)
-                        # Use batch_process_logs, but override semantic_template with RAG-enabled version
-                        processed_logs = self.logai_handler.batch_process_logs(lines, source)
+                        # Parallelize batch processing for large log batches
+                        processed_logs = []
+                        with ThreadPoolExecutor(max_workers=8) as executor:
+                            futures = [executor.submit(self._process_log_line_parallel, line, source) for line in lines]
+                            for future in as_completed(futures):
+                                result = future.result()
+                                if result:
+                                    processed_logs.append(result)
                         for processed_log in processed_logs:
-                            # Use RAG-enabled template extraction
                             rag_template = self.logai_handler.get_llm_template_with_rag(
                                 processed_log["message"], self.es_handler, context_count=10)
                             processed_log["semantic_template"] = rag_template
                             self.es_handler.index_log(processed_log)
-                            # Log anomaly score for every log
-                            logger.info(f"Log: {processed_log['message']} | Anomaly Score: {processed_log['anomaly_score']}")
+                            logger.debug(f"Log: {processed_log['message']} | Anomaly Score: {processed_log['anomaly_score']}")
                             if processed_log['anomaly_score'] > ANOMALY_THRESHOLD:
                                 logger.warning(f"ANOMALY DETECTED: {processed_log['message']} (score: {processed_log['anomaly_score']:.4f})")
-                                # Collect user feedback for fine-tuning
                                 self._collect_user_feedback(processed_log)
-                                # Submit anomaly to LLM (llama4) for detailed report
                                 self._generate_llm_report(processed_log)
         except Exception as e:
             logger.error(f"Error processing log file {file_path}: {e}")
+    
+    def _process_log_line_parallel(self, line, source):
+        try:
+            return self.logai_handler.process_log(line, source)
+        except Exception as e:
+            logger.error(f"Parallel log processing error: {e}")
+            return None
     
     def _collect_user_feedback(self, processed_log):
         """
@@ -114,7 +124,7 @@ class LogFileHandler(FileSystemEventHandler):
     
     def _generate_llm_report(self, processed_log):
         """
-        Submit anomaly log to LLM (llama4) and generate a detailed, readable report with suggestions.
+        Submit anomaly log to LLM (llama3.1) and generate a detailed, readable report with suggestions.
         Save the report to a file for review.
         """
         import requests
@@ -136,7 +146,7 @@ class LogFileHandler(FileSystemEventHandler):
             response = requests.post(
                 'http://localhost:11434/api/generate',
                 json={
-                    'model': 'llama4',
+                    'model': 'llama3.1',
                     'prompt': prompt,
                     'stream': False
                 },

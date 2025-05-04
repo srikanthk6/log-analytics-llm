@@ -5,6 +5,7 @@ from elasticsearch import Elasticsearch
 import json
 import logging
 from typing import Dict, List, Any
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,10 @@ class ElasticsearchHandler:
                         },
                         "source": {"type": "keyword"},
                         "level": {"type": "keyword"},
-                        "anomaly_score": {"type": "float"}
+                        "anomaly_score": {"type": "float"},
+                        "semantic_template": {"type": "text"},
+                        "template": {"type": "text"},
+                        "llm_report": {"type": "text"}
                     }
                 }
             }
@@ -110,3 +114,63 @@ class ElasticsearchHandler:
         except Exception as e:
             logger.error(f"Error getting anomalies: {e}")
             return []
+
+    def get_cached_template(self, template: str) -> str:
+        """Retrieve cached LLM template from Elasticsearch if exists."""
+        try:
+            query = {"query": {"term": {"semantic_template.keyword": template}}}
+            resp = self.es.search(index=self.index_name, body=query, size=1)
+            hits = resp.get("hits", {}).get("hits", [])
+            if hits:
+                return hits[0]["_source"].get("semantic_template", "")
+        except Exception as e:
+            logger.warning(f"Failed to retrieve cached template: {e}")
+        return None
+
+    def cache_template(self, template: str, semantic_template: str):
+        """Store LLM template in Elasticsearch for future reuse."""
+        try:
+            doc = {"semantic_template": semantic_template, "template": template, "timestamp": datetime.utcnow().isoformat()}
+            self.es.index(index=self.index_name, document=doc)
+        except Exception as e:
+            logger.warning(f"Failed to cache template: {e}")
+
+    def get_cached_embedding(self, message: str):
+        """Retrieve cached embedding from Elasticsearch if exists."""
+        try:
+            query = {"query": {"term": {"message.keyword": message}}}
+            resp = self.es.search(index=self.index_name, body=query, size=1)
+            hits = resp.get("hits", {}).get("hits", [])
+            if hits:
+                return hits[0]["_source"].get("log_vector", None)
+        except Exception as e:
+            logger.warning(f"Failed to retrieve cached embedding: {e}")
+        return None
+
+    def cache_embedding(self, message: str, log_vector):
+        """Store embedding in Elasticsearch for future reuse."""
+        try:
+            doc = {"message": message, "log_vector": log_vector, "timestamp": datetime.utcnow().isoformat()}
+            self.es.index(index=self.index_name, document=doc)
+        except Exception as e:
+            logger.warning(f"Failed to cache embedding: {e}")
+
+    def get_cached_llm_report(self, message: str):
+        """Retrieve cached LLM anomaly report from Elasticsearch if exists."""
+        try:
+            query = {"query": {"term": {"message.keyword": message}}}
+            resp = self.es.search(index=self.index_name, body=query, size=1)
+            hits = resp.get("hits", {}).get("hits", [])
+            if hits:
+                return hits[0]["_source"].get("llm_report", None)
+        except Exception as e:
+            logger.warning(f"Failed to retrieve cached LLM report: {e}")
+        return None
+
+    def cache_llm_report(self, message: str, llm_report: str):
+        """Store LLM anomaly report in Elasticsearch for future reuse."""
+        try:
+            doc = {"message": message, "llm_report": llm_report, "timestamp": datetime.utcnow().isoformat()}
+            self.es.index(index=self.index_name, document=doc)
+        except Exception as e:
+            logger.warning(f"Failed to cache LLM report: {e}")
