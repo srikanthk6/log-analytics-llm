@@ -6,6 +6,9 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Any, Tuple
 from datetime import datetime
+import os
+import re
+from difflib import SequenceMatcher
 
 # Update imports with correct class names from LogAI
 from logai.dataloader.data_model import LogRecordObject
@@ -18,13 +21,50 @@ from logai.algorithms.anomaly_detection_algo.isolation_forest import IsolationFo
 logger = logging.getLogger(__name__)
 
 class LogAIHandler:
-    def __init__(self, window_size: int = 100):
+    ABBREVIATION_MAP = {
+        "conn": "connection",
+        "svc": "service",
+        "auth": "authentication",
+        "db": "database",
+        "cfg": "configuration",
+        "msg": "message",
+        "usr": "user",
+        "pwd": "password",
+        "err": "error",
+        "req": "request",
+        "resp": "response",
+        "init": "initialize",
+        "proc": "process",
+        "agg": "aggregate",
+        "num": "number",
+        "mem": "memory",
+        "perf": "performance",
+        "temp": "temporary",
+        "dest": "destination",
+        "src": "source",
+        "info": "information",
+        "cfg": "configuration",
+        "upd": "update",
+        "del": "delete",
+        "add": "add",
+        "rm": "remove",
+        "stat": "status",
+        "env": "environment",
+        "prod": "production",
+        "dev": "development",
+        "test": "testing",
+        "qa": "quality_assurance"
+    }
+
+    def __init__(self, window_size: int = 100, embedding_model_name: str = None, llm_model_name: str = None):
         """Initialize LogAI components"""
         self.window_size = window_size
         self.template_cache = {}
         from sentence_transformers import SentenceTransformer
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        self.embedding_dim = 384
+        embedding_model_name = embedding_model_name or os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        self.embedding_model = SentenceTransformer(embedding_model_name)
+        self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
+        self.llm_model_name = llm_model_name or os.getenv("LLM_MODEL", "codellama:instruct")
         self._setup_components()
         
     def _setup_components(self) -> None:
@@ -66,6 +106,20 @@ class LogAIHandler:
         # Storage for log data
         self.logs_buffer = []
         
+    def normalize_abbreviations(self, text: str) -> str:
+        """Expand common abbreviations in a string."""
+        def repl(match):
+            word = match.group(0)
+            return self.ABBREVIATION_MAP.get(word.lower(), word)
+        return re.sub(r'\b(' + '|'.join(self.ABBREVIATION_MAP.keys()) + r')\b', repl, text, flags=re.IGNORECASE)
+
+    def are_strings_similar(self, s1: str, s2: str, threshold: float = 0.85) -> bool:
+        """Return True if two strings are similar above a threshold (using SequenceMatcher)."""
+        s1_norm = self.normalize_abbreviations(s1.lower())
+        s2_norm = self.normalize_abbreviations(s2.lower())
+        ratio = SequenceMatcher(None, s1_norm, s2_norm).ratio()
+        return ratio >= threshold
+
     def get_llm_template(self, message: str) -> str:
         """
         Use LLM to generate a semantic template for a log message, with caching.
@@ -77,7 +131,7 @@ class LogAIHandler:
             response = requests.post(
                 'http://localhost:11434/api/generate',
                 json={
-                    'model': 'codellama:instruct',
+                    'model': self.llm_model_name,
                     'prompt': f"Extract a log template for the following log message. Replace all variable parts (numbers, IDs, paths, etc.) with <*>. Only output the template string.\nLog: {message}",
                     'stream': False
                 },
@@ -107,7 +161,7 @@ class LogAIHandler:
             logger.warning(f"Failed to retrieve recent logs for RAG context: {e}")
             return []
 
-    def get_llm_template_with_rag(self, message: str, es_handler, context_count=10) -> str:
+    def get_llm_template_with_rag(self, message: str, es_handler, context_count=10, feedback_count=5) -> str:
         """
         Use LLM to generate a semantic template for a log message, with RAG context and caching.
         """
@@ -116,17 +170,29 @@ class LogAIHandler:
         import requests
         # Retrieve recent logs for context
         context_logs = self.get_recent_logs_for_context(es_handler, count=context_count)
+        # Retrieve labeled anomaly examples from feedback file
+        feedback_file = os.path.join(os.getenv("LOG_DIR", "."), "anomaly_feedback.csv")
+        feedback_examples = []
+        if os.path.isfile(feedback_file):
+            import csv
+            with open(feedback_file, newline="") as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in list(reader)[-feedback_count:]:
+                    feedback_examples.append(f"[ANOMALY] {row.get('message','')}")
         context_str = "\n".join(context_logs)
+        feedback_str = "\n".join(feedback_examples)
         prompt = (
             f"You are an expert log analyst. Here are some recent log messages for context:\n"
             f"{context_str}\n"
+            f"Here are some known anomaly examples:\n"
+            f"{feedback_str}\n"
             f"Now, extract a log template for the following log message. Replace all variable parts (numbers, IDs, paths, etc.) with <*>. Only output the template string.\nLog: {message}"
         )
         try:
             response = requests.post(
                 'http://localhost:11434/api/generate',
                 json={
-                    'model': 'codellama:instruct',
+                    'model': self.llm_model_name,
                     'prompt': prompt,
                     'stream': False
                 },
@@ -204,7 +270,7 @@ class LogAIHandler:
                 "message": log_line,
                 "source": source,
                 "level": "ERROR",
-                "log_vector": np.zeros(384).tolist(),  # Empty vector
+                "log_vector": np.zeros(self.embedding_dim).tolist(),  # Empty vector
                 "anomaly_score": 0.0,
                 "semantic_template": log_line
             }
@@ -260,7 +326,7 @@ class LogAIHandler:
     
     def _generate_vector_embedding(self, message: str) -> np.ndarray:
         """
-        Generate vector embedding for the log message using all-MiniLM-L6-v2.
+        Generate vector embedding for the log message using the configured embedding model.
         """
         try:
             embedding = self.embedding_model.encode(message, show_progress_bar=False, normalize_embeddings=True)
@@ -388,8 +454,8 @@ class LogAIHandler:
         """
         from collections import defaultdict
         processed_logs = []
-        template_groups = defaultdict(list)
-        # Step 1: Group logs by template hash (using Drain or simple hash)
+        template_groups = []  # List of (template, [logs])
+        # Step 1: For each log, normalize abbreviations and group by similar template
         for log_line in log_lines:
             # Use Drain parser to get template (or fallback to message)
             try:
@@ -398,16 +464,22 @@ class LogAIHandler:
                 template = cluster.template if cluster else message
             except Exception:
                 template = log_line
-            template_hash = hash(template)
-            template_groups[template_hash].append((log_line, template))
+            template_norm = self.normalize_abbreviations(template)
+            # Try to group with existing templates using string similarity
+            found_group = False
+            for idx, (group_template, group_logs) in enumerate(template_groups):
+                if self.are_strings_similar(template_norm, group_template):
+                    group_logs.append((log_line, template))
+                    found_group = True
+                    break
+            if not found_group:
+                template_groups.append((template_norm, [(log_line, template)]))
         # Step 2: For each group, call LLM once and cache result
-        for group in template_groups.values():
-            # Use the first log's message as representative
+        for group_template, group in template_groups:
             log_line, template = group[0]
             semantic_template = self.get_llm_template(template)
-            # Step 3: Process all logs in the group with the cached template
             for log_line, _ in group:
                 result = self.process_log(log_line, source)
-                result["semantic_template"] = semantic_template  # Overwrite with batched/cached template
+                result["semantic_template"] = semantic_template
                 processed_logs.append(result)
         return processed_logs

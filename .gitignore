@@ -39,6 +39,7 @@ ENV/
 .python-version
 
 # Project specific
+log_analytics/logs/*.*
 log_analytics/logs/*.log
 .env
 

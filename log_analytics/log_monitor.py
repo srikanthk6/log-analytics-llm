@@ -85,11 +85,73 @@ class LogFileHandler(FileSystemEventHandler):
                                 processed_log["message"], self.es_handler, context_count=10)
                             processed_log["semantic_template"] = rag_template
                             self.es_handler.index_log(processed_log)
-                            logger.debug(f"Log: {processed_log['message']} | Anomaly Score: {processed_log['anomaly_score']}")
+                            # Log anomaly score for every log
+                            logger.info(f"Log: {processed_log['message']} | Anomaly Score: {processed_log['anomaly_score']}")
                             if processed_log['anomaly_score'] > ANOMALY_THRESHOLD:
                                 logger.warning(f"ANOMALY DETECTED: {processed_log['message']} (score: {processed_log['anomaly_score']:.4f})")
+                                # Collect user feedback for fine-tuning
+                                self._collect_user_feedback(processed_log)
+                                # Submit anomaly to LLM (llama4) for detailed report
+                                self._generate_llm_report(processed_log)
         except Exception as e:
             logger.error(f"Error processing log file {file_path}: {e}")
+    
+    def _collect_user_feedback(self, processed_log):
+        """
+        Append detected anomaly log and its score to a feedback file for future fine-tuning or in-context learning.
+        """
+        feedback_file = os.path.join(LOG_DIR, "anomaly_feedback.csv")
+        import csv
+        file_exists = os.path.isfile(feedback_file)
+        with open(feedback_file, mode="a", newline="") as csvfile:
+            fieldnames = ["timestamp", "message", "source", "level", "anomaly_score", "semantic_template", "is_anomaly"]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            row = {k: processed_log.get(k, "") for k in fieldnames}
+            row["is_anomaly"] = 1  # Default to 1 (anomaly detected)
+            writer.writerow(row)
+    
+    def _generate_llm_report(self, processed_log):
+        """
+        Submit anomaly log to LLM (llama4) and generate a detailed, readable report with suggestions.
+        Save the report to a file for review.
+        """
+        import requests
+        import json
+        report_file = os.path.join(LOG_DIR, "anomaly_reports.txt")
+        prompt = (
+            f"You are an expert SRE and log analyst.\n"
+            f"Analyze the following anomalous log and generate a detailed, human-readable report.\n"
+            f"Include:\n- What the issue is\n- Why it might have happened\n- Suggestions for resolution or prevention\n- Any relevant context from the log fields\n"
+            f"Log details:\n"
+            f"Timestamp: {processed_log.get('timestamp','')}\n"
+            f"Level: {processed_log.get('level','')}\n"
+            f"Source: {processed_log.get('source','')}\n"
+            f"Message: {processed_log.get('message','')}\n"
+            f"Semantic Template: {processed_log.get('semantic_template','')}\n"
+            f"Anomaly Score: {processed_log.get('anomaly_score','')}\n"
+        )
+        try:
+            response = requests.post(
+                'http://localhost:11434/api/generate',
+                json={
+                    'model': 'llama4',
+                    'prompt': prompt,
+                    'stream': False
+                },
+                timeout=120
+            )
+            data = response.json()
+            report = data.get('response', '').strip()
+            with open(report_file, 'a') as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"Log Timestamp: {processed_log.get('timestamp','')}\n")
+                f.write(f"Log Message: {processed_log.get('message','')}\n")
+                f.write(f"LLM Report:\n{report}\n")
+            logger.info(f"LLM anomaly report generated and saved for log at {processed_log.get('timestamp','')}")
+        except Exception as e:
+            logger.error(f"Failed to generate LLM report for anomaly: {e}")
     
     def _is_log_file(self, file_path):
         """Check if file is a log file based on extension or name"""
