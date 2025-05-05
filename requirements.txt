@@ -6,3 +6,4 @@ pydantic
 numpy
 pytest
 sentence-transformers
+flask-cors

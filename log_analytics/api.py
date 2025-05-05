@@ -4,6 +4,7 @@ REST API for log analytics system
 import json
 import logging
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 from log_analytics.config.config import (
     ELASTICSEARCH_HOST,
@@ -24,6 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+CORS(app)
 
 # Initialize handlers
 es_handler = ElasticsearchHandler(
@@ -148,6 +150,53 @@ You are an expert SRE and log analyst. Analyze the following logs in relation to
         })
     except Exception as e:
         logger.error(f"Error analyzing logs: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    """Conversational Log Analytics Chatbot Endpoint"""
+    import requests
+    try:
+        data = request.get_json()
+        if not data or 'message' not in data:
+            return jsonify({"status": "error", "message": "Message parameter is required"}), 400
+        user_message = data['message']
+        history = data.get('history', [])  # List of {"role": "user"|"assistant", "content": ...}
+        size = int(data.get('size', 5))
+        # Retrieve relevant logs for context
+        query_vector = logai_handler._generate_vector_embedding(user_message).tolist()
+        similar_logs = es_handler.search_similar_logs(query_vector, top_k=size)
+        log_context = "\n".join([
+            f"[{log['_source'].get('timestamp', '?')}] [{log['_source'].get('level', '?')}] {log['_source'].get('message', '')}"
+            for log in similar_logs
+        ])
+        # Build conversation prompt
+        conversation = "".join([
+            f"{turn['role'].capitalize()}: {turn['content']}\n" for turn in history
+        ])
+        prompt = f"""
+You are a helpful log analytics assistant. Use the following logs to answer the user's question or help troubleshoot issues.\n\nRelevant logs:\n{log_context}\n\nConversation so far:\n{conversation}User: {user_message}\nAssistant: """
+        # Call LLM (Ollama or other backend)
+        response = requests.post(
+            'http://localhost:11434/api/generate',
+            json={
+                'model': 'llama3.1',
+                'prompt': prompt,
+                'stream': False
+            },
+            timeout=120
+        )
+        if response.status_code == 200:
+            llm_reply = response.json().get('response', '').strip()
+        else:
+            llm_reply = f"LLM error: {response.status_code} {response.text}"
+        return jsonify({
+            "status": "success",
+            "reply": llm_reply,
+            "logs": [log['_source'] for log in similar_logs]
+        })
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 def start_api(host='0.0.0.0', port=5000, debug=False):

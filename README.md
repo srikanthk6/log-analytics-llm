@@ -289,6 +289,106 @@ This project can be enhanced by integrating a local LLM, such as Ollama's `llama
 
 These enhancements can make the log analytics system more powerful, interpretable, and user-friendly.
 
+## Setting up Node.js and React Frontend
+
+If you do not have a compatible Node.js version, you can use nvm (Node Version Manager) to install the latest version and set up the React frontend:
+
+```sh
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
+nvm install v22.13.1
+npx create-react-app .
+npm install
+npm start
+```
+
+This will:
+- Install nvm (Node Version Manager)
+- Install Node.js v22.13.1
+- Create a new React app in the current directory
+- Install dependencies
+- Start the React development server
+
+If you want to enable markdown and table formatting in the chatbot UI, install the following dependency in your frontend directory:
+
+```
+npm install react-markdown
+```
+
+## Frontend Chatbot UI (React)
+
+To enable a conversational log analytics chatbot, you can use the following React component:
+
+Create a new file `frontend/src/ChatbotUI.jsx`:
+
+```jsx
+import React, { useState } from 'react';
+import axios from 'axios';
+
+function ChatbotUI() {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const sendMessage = async () => {
+    if (!input.trim()) return;
+    const userMsg = { role: 'user', content: input };
+    setMessages([...messages, userMsg]);
+    setInput('');
+    setLoading(true);
+    try {
+      const res = await axios.post('/chat', {
+        message: input,
+        history: messages,
+        size: 5
+      });
+      const reply = res.data.reply;
+      setMessages([...messages, userMsg, { role: 'assistant', content: reply }]);
+    } catch (err) {
+      setMessages([...messages, userMsg, { role: 'assistant', content: 'Error: Could not get response.' }]);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ maxWidth: 600, margin: 'auto', padding: 20 }}>
+      <h2>Log Analytics Chatbot</h2>
+      <div style={{ border: '1px solid #ccc', padding: 10, minHeight: 300, marginBottom: 10, background: '#fafafa' }}>
+        {messages.map((msg, idx) => (
+          <div key={idx} style={{ textAlign: msg.role === 'user' ? 'right' : 'left' }}>
+            <b>{msg.role === 'user' ? 'You' : 'Assistant'}:</b> {msg.content}
+          </div>
+        ))}
+        {loading && <div>Assistant is typing...</div>}
+      </div>
+      <input
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={e => e.key === 'Enter' ? sendMessage() : null}
+        style={{ width: '80%' }}
+        placeholder="Ask about your logs..."
+        disabled={loading}
+      />
+      <button onClick={sendMessage} disabled={loading || !input.trim()}>Send</button>
+    </div>
+  );
+}
+
+export default ChatbotUI;
+```
+
+### Setup Instructions
+
+1. Create a new folder `frontend` and initialize a React app:
+   ```sh
+   npx create-react-app frontend
+   cd frontend
+   npm install axios
+   ```
+2. Add the above `ChatbotUI.jsx` to `src/` and import it in `App.js`.
+3. Make sure your Flask backend allows CORS (see requirements.txt and Flask-CORS usage).
+4. Start the React app with `npm start`.
+5. The React app should proxy API requests to your Flask backend (set up `proxy` in `frontend/package.json` if needed).
+
 ## Project Structure
 
 ```

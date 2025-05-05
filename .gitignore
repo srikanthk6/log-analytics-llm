@@ -78,3 +78,17 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Node.js / React
+frontend/node_modules/
+frontend/build/
+frontend/.env
+frontend/.DS_Store
+
+# Logs
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# Editor
+frontend/.vscode/
