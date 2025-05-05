@@ -97,6 +97,16 @@ class LogFileHandler(FileSystemEventHandler):
                                 self._collect_user_feedback(processed_log)
                         # After processing all logs, generate grouped LLM reports
                         self._generate_grouped_llm_reports(processed_logs)
+
+            # Move processed log file if it's the main ecommerce log
+            if os.path.abspath(file_path).endswith(os.path.join('log_analytics', 'logs', 'ecommerce.log')):
+                processed_dir = os.path.join(os.path.dirname(file_path), 'processed')
+                os.makedirs(processed_dir, exist_ok=True)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                new_name = f"ecommerce_{timestamp}.log"
+                new_path = os.path.join(processed_dir, new_name)
+                os.rename(file_path, new_path)
+                logger.info(f"Moved processed log file to: {new_path}")
         except Exception as e:
             logger.error(f"Error processing log file {file_path}: {e}")
     

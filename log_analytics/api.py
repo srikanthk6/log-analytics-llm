@@ -10,6 +10,7 @@ from log_analytics.config.config import (
     ELASTICSEARCH_HOST,
     ELASTICSEARCH_PORT,
     ELASTICSEARCH_INDEX,
+    ELASTICSEARCH_TEMPLATE_INDEX,  # <-- add this
     ANOMALY_THRESHOLD
 )
 from log_analytics.elastic_handler import ElasticsearchHandler
@@ -31,7 +32,8 @@ CORS(app)
 es_handler = ElasticsearchHandler(
     host=ELASTICSEARCH_HOST,
     port=ELASTICSEARCH_PORT, 
-    index_name=ELASTICSEARCH_INDEX
+    index_name=ELASTICSEARCH_INDEX,
+    template_index_name=ELASTICSEARCH_TEMPLATE_INDEX  # <-- add this
 )
 logai_handler = LogAIHandler(window_size=1)
 

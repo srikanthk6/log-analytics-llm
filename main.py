@@ -59,6 +59,11 @@ def main():
     # Ensure log directory exists
     os.makedirs(LOG_DIR, exist_ok=True)
     
+    # Always generate a new log file at startup
+    log_gen_cmd = "python3 generate_ecommerce_logs.py --count 1000 --anomaly-rate 0.2"
+    logger.info(f"Generating new log file with: {log_gen_cmd}")
+    os.system(log_gen_cmd)
+    
     # Store processes to manage
     processes = []
     

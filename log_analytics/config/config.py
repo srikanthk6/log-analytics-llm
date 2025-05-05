@@ -11,6 +11,7 @@ load_dotenv()
 ELASTICSEARCH_HOST = os.getenv("ELASTICSEARCH_HOST", "localhost")
 ELASTICSEARCH_PORT = int(os.getenv("ELASTICSEARCH_PORT", 9200))
 ELASTICSEARCH_INDEX = os.getenv("ELASTICSEARCH_INDEX", "logs_vector_index")
+ELASTICSEARCH_TEMPLATE_INDEX = os.getenv("ELASTICSEARCH_TEMPLATE_INDEX", "semantic_templates_index")
 
 # LogAI Configuration
 LOG_DIR = os.getenv("LOG_DIR", "/home/ubuntu/simplellm/log_analytics/logs")

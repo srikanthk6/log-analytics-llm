@@ -1,6 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
+import 'highlight.js/styles/github.css';
 
 const COLORS = {
   background: '#181F2A',
@@ -17,7 +20,9 @@ const COLORS = {
 };
 
 function formatLLMContent(content) {
-  return <ReactMarkdown>{content}</ReactMarkdown>;
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{content}</ReactMarkdown>
+  );
 }
 
 function ChatbotUI() {
@@ -64,68 +69,53 @@ function ChatbotUI() {
 
   return (
     <div style={{
-      minHeight: '100vh',
-      background: 'linear-gradient(120deg, #1a2236 0%, #4F8EF7 100%)',
+      height: '100vh',
+      width: '100vw',
+      background: '#f7f7f8',
       display: 'flex',
       flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
       fontFamily: 'Inter, Segoe UI, Arial, sans-serif',
-      padding: 0,
       margin: 0,
       boxSizing: 'border-box',
-      overflow: 'auto',
+      overflow: 'hidden',
     }}>
+      {/* Header */}
       <div style={{
-        background: 'rgba(24,31,42,0.92)',
-        borderRadius: 32,
-        boxShadow: '0 12px 48px 0 rgba(79,142,247,0.18), 0 1.5px 8px 0 rgba(44,54,84,0.10)',
-        width: '100%',
-        maxWidth: 620,
-        minHeight: 640,
+        background: '#fff',
+        color: '#222',
+        padding: '16px 0 12px 0',
+        textAlign: 'center',
+        fontWeight: 800,
+        fontSize: 24,
+        letterSpacing: 1.5,
+        borderBottom: '1px solid #ececec',
+        boxShadow: '0 1px 8px 0 rgba(0,0,0,0.03)',
+        zIndex: 2,
+      }}>
+        <span style={{verticalAlign:'middle',display:'inline-block',marginRight:8}}>
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#4F8EF7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{verticalAlign:'middle'}}>
+            <rect x="3" y="8" width="18" height="10" rx="4" />
+            <circle cx="7" cy="12" r="1" />
+            <circle cx="17" cy="12" r="1" />
+            <path d="M8 16v1a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-1" />
+            <path d="M12 8V5m0-2v2" />
+          </svg>
+        </span>
+        <span style={{color:'#4F8EF7'}}>Log Analytics Chatbot</span>
+      </div>
+      {/* Chat area */}
+      <div style={{
+        flex: 1,
+        overflowY: 'auto',
+        background: '#f7f7f8',
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
-        border: `2.5px solid #4F8EF7`,
-        backdropFilter: 'blur(16px)',
-        margin: '32px 0',
+        gap: 12,
+        padding: '0 0 110px 0',
+        scrollbarWidth: 'thin',
+        minHeight: 0,
       }}>
-        <div style={{
-          background: 'linear-gradient(90deg, #4F8EF7 0%, #232B3E 100%)',
-          color: '#fff',
-          padding: '32px 0 28px 0',
-          textAlign: 'center',
-          fontWeight: 900,
-          fontSize: 32,
-          letterSpacing: 2,
-          borderBottom: `1.5px solid #2C3654`,
-          boxShadow: '0 2px 12px rgba(79,142,247,0.10)',
-          textShadow: '0 2px 8px #232B3E44',
-        }}>
-          <span style={{verticalAlign:'middle',display:'inline-block',marginRight:8}}>
-            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#FFD700" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{verticalAlign:'middle'}}>
-              <rect x="3" y="8" width="18" height="10" rx="4" />
-              <circle cx="7" cy="12" r="1" />
-              <circle cx="17" cy="12" r="1" />
-              <path d="M8 16v1a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-1" />
-              <path d="M12 8V5m0-2v2" />
-            </svg>
-          </span>
-          <span style={{color:'#FFD700'}}>Log Analytics Chatbot</span>
-        </div>
-        <div style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '38px 36px 38px 36px',
-          background: 'transparent',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 28,
-          height: 0,
-          minHeight: 0,
-          maxHeight: 480,
-          scrollbarWidth: 'thin',
-        }}>
+        <div style={{padding: '18px 0 0 0', width: '100%', maxWidth: 720, margin: '0 auto'}}>
           {messages.map((msg, idx) => (
             <div
               key={idx}
@@ -134,34 +124,36 @@ function ChatbotUI() {
                 justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
                 alignItems: 'flex-end',
                 width: '100%',
+                marginBottom: 6,
               }}
             >
               <div
                 style={{
-                  background: msg.role === 'user' ? 'linear-gradient(90deg, #4F8EF7 60%, #7FBCFF 100%)' : 'linear-gradient(90deg, #232B3E 60%, #4F8EF7 100%)',
-                  color: msg.role === 'user' ? '#fff' : '#FFD700',
-                  borderRadius: 22,
-                  borderBottomRightRadius: msg.role === 'user' ? 8 : 22,
-                  borderBottomLeftRadius: msg.role === 'user' ? 22 : 8,
-                  padding: '18px 26px',
+                  background: msg.role === 'user' ? '#fff' : '#f0f2f6',
+                  color: '#222',
+                  borderRadius: 10,
+                  borderBottomRightRadius: msg.role === 'user' ? 4 : 10,
+                  borderBottomLeftRadius: msg.role === 'user' ? 10 : 4,
+                  padding: '10px 16px',
                   maxWidth: '80%',
-                  fontSize: 18,
-                  boxShadow: msg.role === 'user' ? '0 4px 16px rgba(79,142,247,0.18)' : '0 4px 16px rgba(44,54,84,0.18)',
-                  border: msg.role === 'user' ? '2px solid #7FBCFF' : '2px solid #FFD700',
+                  fontSize: 16,
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+                  border: '1px solid #ececec',
                   transition: 'background 0.2s',
                   wordBreak: 'break-word',
-                  lineHeight: 1.7,
-                  backdropFilter: 'blur(2px)',
+                  lineHeight: 1.6,
+                  margin: '0 6px',
+                  backdropFilter: 'none',
                 }}
               >
-                <b style={{ fontWeight: 800, fontSize: 15, opacity: 0.85, letterSpacing: 0.5 }}>
+                <b style={{ fontWeight: 600, fontSize: 13, opacity: 0.7, letterSpacing: 0.3 }}>
                   {msg.role === 'user' ? 'You' : 'Assistant'}:
                 </b>
-                <div style={{ marginTop: 8, whiteSpace: 'pre-line' }}>
+                <div style={{ marginTop: 4, whiteSpace: 'pre-line' }}>
                   {msg.role === 'assistant' ? formatLLMContent(msg.content) : msg.content}
                 </div>
                 {msg.content === 'Note that you asked this question twice, but the answer remains the same!' && (
-                  <div style={{ marginTop: 10, color: '#FFD700', fontWeight: 700, fontSize: 15 }}>
+                  <div style={{ marginTop: 6, color: '#4F8EF7', fontWeight: 600, fontSize: 13 }}>
                     <span role="img" aria-label="info">ℹ️</span> Note that you asked this question twice, but the answer remains the same!
                   </div>
                 )}
@@ -171,18 +163,18 @@ function ChatbotUI() {
           {loading && (
             <div style={{ display: 'flex', justifyContent: 'flex-start', width: '100%' }}>
               <div style={{
-                background: 'linear-gradient(90deg, #232B3E 60%, #4F8EF7 100%)',
-                color: '#FFD700',
-                borderRadius: 22,
-                borderBottomLeftRadius: 8,
-                padding: '18px 26px',
-                fontSize: 18,
+                background: '#f0f2f6',
+                color: '#222',
+                borderRadius: 10,
+                borderBottomLeftRadius: 4,
+                padding: '10px 16px',
+                fontSize: 16,
                 maxWidth: '80%',
                 fontStyle: 'italic',
                 opacity: 0.7,
-                border: '2px solid #FFD700',
-                boxShadow: '0 4px 16px rgba(44,54,84,0.18)',
-                backdropFilter: 'blur(2px)',
+                border: '1px solid #ececec',
+                boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+                backdropFilter: 'none',
               }}>
                 Assistant is typing...
               </div>
@@ -190,14 +182,23 @@ function ChatbotUI() {
           )}
           <div ref={chatEndRef} />
         </div>
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          padding: '28px 28px 28px 28px',
-          background: 'rgba(24,31,42,0.98)',
-          borderTop: `1.5px solid #2C3654`,
-          gap: 18,
-        }}>
+      </div>
+      {/* Input area fixed at bottom */}
+      <div style={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        width: '100vw',
+        background: '#fff',
+        borderTop: '1px solid #ececec',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '14px 8px 14px 8px',
+        zIndex: 10,
+        boxShadow: '0 -1px 8px rgba(0,0,0,0.03)',
+      }}>
+        <div style={{width:'100%',maxWidth:720,margin:'0 auto',display:'flex',alignItems:'center',gap:10}}>
           <input
             ref={inputRef}
             value={input}
@@ -205,18 +206,18 @@ function ChatbotUI() {
             onKeyDown={handleInputKeyDown}
             style={{
               flex: 1,
-              background: 'rgba(35,43,62,0.98)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 18,
-              padding: '18px 22px',
-              fontSize: 19,
+              background: '#f7f7f8',
+              color: '#222',
+              border: '1px solid #ececec',
+              borderRadius: 8,
+              padding: '12px 14px',
+              fontSize: 16,
               outline: 'none',
               marginRight: 0,
-              boxShadow: '0 2px 8px rgba(44,54,84,0.12)',
-              caretColor: '#FFD700',
-              fontFamily: 'Fira Mono, monospace',
-              letterSpacing: 0.7,
+              boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
+              caretColor: '#4F8EF7',
+              fontFamily: 'Inter, Segoe UI, Arial, sans-serif',
+              letterSpacing: 0.3,
               transition: 'box-shadow 0.2s',
             }}
             placeholder="Ask about your logs..."
@@ -227,26 +228,26 @@ function ChatbotUI() {
             onClick={sendMessage}
             disabled={loading || !input.trim()}
             style={{
-              background: 'linear-gradient(90deg, #FFD700 0%, #4F8EF7 100%)',
-              color: '#232B3E',
+              background: '#4F8EF7',
+              color: '#fff',
               border: 'none',
-              borderRadius: 18,
-              padding: '18px 36px',
-              fontWeight: 900,
-              fontSize: 19,
+              borderRadius: 8,
+              padding: '12px 22px',
+              fontWeight: 700,
+              fontSize: 16,
               cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
-              boxShadow: '0 4px 16px rgba(79,142,247,0.18)',
+              boxShadow: '0 1px 4px rgba(79,142,247,0.10)',
               transition: 'background 0.2s, box-shadow 0.2s, opacity 0.2s',
               opacity: loading || !input.trim() ? 0.7 : 1,
-              fontFamily: 'Fira Mono, monospace',
-              letterSpacing: 0.7,
+              fontFamily: 'Inter, Segoe UI, Arial, sans-serif',
+              letterSpacing: 0.3,
               outline: 'none',
             }}
-            onMouseOver={e => e.currentTarget.style.boxShadow = '0 8px 24px rgba(255,215,0,0.18)'}
-            onMouseOut={e => e.currentTarget.style.boxShadow = '0 4px 16px rgba(79,142,247,0.18)'}
+            onMouseOver={e => e.currentTarget.style.background = '#2563eb'}
+            onMouseOut={e => e.currentTarget.style.background = '#4F8EF7'}
           >
-            <span style={{verticalAlign:'middle',display:'inline-block',marginRight:8}}>
-              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#232B3E" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <span style={{verticalAlign:'middle',display:'inline-block',marginRight:6}}>
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M22 2 11 13" />
                 <path d="M22 2 15 22 11 13 2 9l20-7z" />
               </svg>
@@ -255,9 +256,11 @@ function ChatbotUI() {
           </button>
         </div>
       </div>
-      <div style={{ color: '#FFD700', marginTop: 32, fontSize: 16, opacity: 0.92, fontWeight: 700, letterSpacing: 0.7, textShadow: '0 1px 4px #232B3E44' }}>
+      {/* Footer */}
+      <div style={{ color: '#4F8EF7', marginTop: 8, fontSize: 14, opacity: 0.92, fontWeight: 600, letterSpacing: 0.3, textShadow: '0 1px 2px #fff', textAlign: 'center' }}>
         Powered by <b>SimpleLLM</b> &middot; <span role="img" aria-label="log">📝</span>
       </div>
+      {/* Dev Prompt Modal */}
       {showPrompt && devPrompt && (
         <div style={{
           position: 'fixed',
@@ -272,14 +275,14 @@ function ChatbotUI() {
           justifyContent: 'center',
         }}>
           <div style={{
-            background: '#232B3E',
-            color: '#FFD700',
-            borderRadius: 18,
-            padding: 32,
+            background: '#fff',
+            color: '#222',
+            borderRadius: 10,
+            padding: 24,
             maxWidth: 800,
             maxHeight: '80vh',
             overflowY: 'auto',
-            boxShadow: '0 8px 32px rgba(44,54,84,0.28)',
+            boxShadow: '0 8px 32px rgba(44,54,84,0.10)',
             fontFamily: 'Fira Mono, monospace',
             fontSize: 15,
             position: 'relative',
@@ -288,18 +291,18 @@ function ChatbotUI() {
               position: 'absolute',
               top: 12,
               right: 18,
-              background: '#FFD700',
-              color: '#232B3E',
+              background: '#4F8EF7',
+              color: '#fff',
               border: 'none',
-              borderRadius: 8,
+              borderRadius: 6,
               padding: '6px 16px',
-              fontWeight: 900,
-              fontSize: 16,
+              fontWeight: 700,
+              fontSize: 15,
               cursor: 'pointer',
-              boxShadow: '0 2px 8px rgba(44,54,84,0.18)',
+              boxShadow: '0 1px 4px rgba(44,54,84,0.10)',
             }}>Close</button>
-            <div style={{ marginBottom: 18, fontWeight: 800, fontSize: 18 }}>LLM Prompt (Dev View)</div>
-            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#FFD700', background: 'none', fontFamily: 'Fira Mono, monospace', fontSize: 14 }}>{devPrompt}</pre>
+            <div style={{ marginBottom: 12, fontWeight: 700, fontSize: 16 }}>LLM Prompt (Dev View)</div>
+            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#222', background: 'none', fontFamily: 'Fira Mono, monospace', fontSize: 14 }}>{devPrompt}</pre>
           </div>
         </div>
       )}

@@ -10,11 +10,12 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 class ElasticsearchHandler:
-    def __init__(self, host: str = "localhost", port: int = 9200, index_name: str = "logs_vector_index"):
+    def __init__(self, host: str = "localhost", port: int = 9200, index_name: str = "logs_vector_index", template_index_name: str = "semantic_templates_index"):
         """Initialize Elasticsearch connection"""
         self.host = host
         self.port = port
         self.index_name = index_name
+        self.template_index_name = template_index_name
         self.es = None
         self.connect()
 
@@ -132,7 +133,7 @@ class ElasticsearchHandler:
         """Retrieve cached LLM template from Elasticsearch if exists."""
         try:
             query = {"query": {"term": {"semantic_template.keyword": template}}}
-            resp = self.es.search(index=self.index_name, body=query, size=1)
+            resp = self.es.search(index=self.template_index_name, body=query, size=1)
             hits = resp.get("hits", {}).get("hits", [])
             if hits:
                 return hits[0]["_source"].get("semantic_template", "")
@@ -144,7 +145,7 @@ class ElasticsearchHandler:
         """Store LLM template in Elasticsearch for future reuse."""
         try:
             doc = {"semantic_template": semantic_template, "template": template, "timestamp": datetime.utcnow().isoformat()}
-            self.es.index(index=self.index_name, document=doc)
+            self.es.index(index=self.template_index_name, document=doc)
         except Exception as e:
             logger.warning(f"Failed to cache template: {e}")
 

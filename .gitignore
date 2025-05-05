@@ -81,6 +81,8 @@ var/
 
 # Node.js / React
 frontend/node_modules/
+**/node_modules/
+node_modules/
 frontend/build/
 frontend/.env
 frontend/.DS_Store
