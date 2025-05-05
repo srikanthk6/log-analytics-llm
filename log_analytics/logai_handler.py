@@ -139,7 +139,7 @@ class LogAIHandler:
                     'prompt': f"Extract a log template for the following log message. Replace all variable parts (numbers, IDs, paths, etc.) with <*>. Only output the template string.\nLog: {message}",
                     'stream': False
                 },
-                timeout=10
+                timeout=120
             )
             data = response.json()
             template = data['response'].strip().replace('\n', ' ')
@@ -404,6 +404,10 @@ class LogAIHandler:
                     logger.error(f"Failed to convert feature array to float: {e}")
                     return 0.0
                 feature_df = pd.DataFrame(X_array)
+                # --- Added checks for empty or mismatched feature DataFrame ---
+                if feature_df.empty or feature_df.shape[1] == 0:
+                    logger.error("Feature DataFrame is empty. Skipping anomaly detection.")
+                    return 0.0
                 if any(feature_df.dtypes == 'object'):
                     logger.error("Feature DataFrame contains non-numeric columns. Aborting anomaly detection.")
                     return 0.0
@@ -431,6 +435,10 @@ class LogAIHandler:
                     logger.error(f"Failed to convert feature array to float: {e}")
                     return 0.0
                 feature_df = pd.DataFrame(X_array)
+                # --- Added checks for empty or mismatched feature DataFrame ---
+                if feature_df.empty or feature_df.shape[1] == 0:
+                    logger.error("Feature DataFrame is empty. Skipping anomaly detection.")
+                    return 0.0
                 if feature_df.shape[1] != self._anomaly_feature_count:
                     logger.warning(f"Feature count mismatch for anomaly detection: expected {self._anomaly_feature_count}, got {feature_df.shape[1]}. Skipping anomaly detection for this batch.")
                     return 0.0

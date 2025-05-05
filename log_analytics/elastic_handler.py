@@ -64,7 +64,7 @@ class ElasticsearchHandler:
             res = self.es.index(index=self.index_name, document=log_data)
             # Only print a sample of the log indexing message occasionally
             import random # For reproducibility
-            if random.random() > 0.001:  # 1% chance to print
+            if random.random() < 0.01:  # 1% chance to print
                 logger.info(f"POST http://{self.host}:{self.port}/{self.index_name}/_doc [status:{res['result']} duration:~s]")
             return res
         except Exception as e:

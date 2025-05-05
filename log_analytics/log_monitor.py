@@ -136,19 +136,16 @@ class LogFileHandler(FileSystemEventHandler):
         # Group logs by source (application) and filter for last 15 minutes
         grouped = {}
 
-        logger.info(f"processed_logs::: {processed_logs}")
         for log in processed_logs:
             try:
                 log_time = datetime.fromisoformat(log.get('timestamp'))
             except Exception:
                 continue
-            if (now - log_time).total_seconds() > 900:
+            if (now - log_time).total_seconds() > 1296000: # 15 days to seconds 15*24*60*60=1296000
                 continue
             source = log.get('source', 'unknown')
             grouped.setdefault(source, []).append(log)
-        for source, logs in grouped.items():
-            logger.info(f"logs::: {logs}")
-            
+        for source, logs in grouped.items():            
             if not logs:
                 continue
             # Aggregate log details for the group
