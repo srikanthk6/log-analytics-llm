@@ -21,7 +21,7 @@ class ElasticsearchHandler:
     def connect(self) -> None:
         """Connect to Elasticsearch"""
         try:
-            self.es = Elasticsearch([f"http://{self.host}:{self.port}"])
+            self.es = Elasticsearch([f"http://{self.host}:{self.port}"], verify_certs=False)
             if not self.es.ping():
                 logger.error("Could not connect to Elasticsearch")
                 raise ConnectionError("Could not connect to Elasticsearch")
@@ -61,9 +61,15 @@ class ElasticsearchHandler:
     def index_log(self, log_data: Dict[str, Any]) -> None:
         """Index a log entry with vector embedding"""
         try:
-            self.es.index(index=self.index_name, document=log_data)
+            res = self.es.index(index=self.index_name, document=log_data)
+            # Only print a sample of the log indexing message occasionally
+            import random # For reproducibility
+            if random.random() > 0.001:  # 1% chance to print
+                logger.info(f"POST http://{self.host}:{self.port}/{self.index_name}/_doc [status:{res['result']} duration:~s]")
+            return res
         except Exception as e:
-            logger.error(f"Error indexing log: {e}")
+            logger.error(f"Failed to index log: {e}")
+            return None
 
     def search_similar_logs(self, vector, top_k=5) -> List[Dict[str, Any]]:
         """Search for logs similar to the given vector"""

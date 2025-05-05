@@ -95,7 +95,8 @@ class LogFileHandler(FileSystemEventHandler):
                             if processed_log['anomaly_score'] > ANOMALY_THRESHOLD:
                                 logger.warning(f"ANOMALY DETECTED: {processed_log['message']} (score: {processed_log['anomaly_score']:.4f})")
                                 self._collect_user_feedback(processed_log)
-                                self._generate_llm_report(processed_log)
+                        # After processing all logs, generate grouped LLM reports
+                        self._generate_grouped_llm_reports(processed_logs)
         except Exception as e:
             logger.error(f"Error processing log file {file_path}: {e}")
     
@@ -122,46 +123,67 @@ class LogFileHandler(FileSystemEventHandler):
             row["is_anomaly"] = 1  # Default to 1 (anomaly detected)
             writer.writerow(row)
     
-    def _generate_llm_report(self, processed_log):
+    def _generate_grouped_llm_reports(self, processed_logs):
         """
-        Submit anomaly log to LLM (llama3.1) and generate a detailed, readable report with suggestions.
-        Save the report to a file for review.
+        Generate a single LLM report per application group (source) for logs in the last 15 minutes.
         """
         import requests
         import json
+        from datetime import datetime, timedelta
         report_file = os.path.join(LOG_DIR, "anomaly_reports.txt")
-        prompt = (
-            f"You are an expert SRE and log analyst.\n"
-            f"Analyze the following anomalous log and generate a detailed, human-readable report.\n"
-            f"Include:\n- What the issue is\n- Why it might have happened\n- Suggestions for resolution or prevention\n- Any relevant context from the log fields\n"
-            f"Log details:\n"
-            f"Timestamp: {processed_log.get('timestamp','')}\n"
-            f"Level: {processed_log.get('level','')}\n"
-            f"Source: {processed_log.get('source','')}\n"
-            f"Message: {processed_log.get('message','')}\n"
-            f"Semantic Template: {processed_log.get('semantic_template','')}\n"
-            f"Anomaly Score: {processed_log.get('anomaly_score','')}\n"
-        )
-        try:
-            response = requests.post(
-                'http://localhost:11434/api/generate',
-                json={
-                    'model': 'llama3.1',
-                    'prompt': prompt,
-                    'stream': False
-                },
-                timeout=120
+        logger.info(f"Writing anomaly group reports to: {os.path.abspath(report_file)}")
+        now = datetime.utcnow()
+        # Group logs by source (application) and filter for last 15 minutes
+        grouped = {}
+
+        logger.info(f"processed_logs::: {processed_logs}")
+        for log in processed_logs:
+            try:
+                log_time = datetime.fromisoformat(log.get('timestamp'))
+            except Exception:
+                continue
+            if (now - log_time).total_seconds() > 900:
+                continue
+            source = log.get('source', 'unknown')
+            grouped.setdefault(source, []).append(log)
+        for source, logs in grouped.items():
+            logger.info(f"logs::: {logs}")
+            
+            if not logs:
+                continue
+            # Aggregate log details for the group
+            messages = '\n'.join(f"- [{l['timestamp']}] {l['level']}: {l['message']} (score: {l['anomaly_score']})" for l in logs)
+            prompt = (
+                f"You are an expert SRE and log analyst.\n"
+                f"Analyze the following group of anomalous logs from application: {source} in the last 15 minutes.\n"
+                f"Summarize the main issues, possible root causes, and provide actionable suggestions.\n"
+                f"Logs:\n{messages}\n"
             )
-            data = response.json()
-            report = data.get('response', '').strip()
-            with open(report_file, 'a') as f:
-                f.write(f"\n{'='*80}\n")
-                f.write(f"Log Timestamp: {processed_log.get('timestamp','')}\n")
-                f.write(f"Log Message: {processed_log.get('message','')}\n")
-                f.write(f"LLM Report:\n{report}\n")
-            logger.info(f"LLM anomaly report generated and saved for log at {processed_log.get('timestamp','')}")
-        except Exception as e:
-            logger.error(f"Failed to generate LLM report for anomaly: {e}")
+            logger.info(f"Sending LLM request for source '{source}' with {len(logs)} logs.")
+            logger.debug(f"LLM prompt: {prompt}")
+            try:
+                response = requests.post(
+                    'http://localhost:11434/api/generate',
+                    json={
+                        'model': 'llama3.1',
+                        'prompt': prompt,
+                        'stream': False
+                    },
+                    timeout=120
+                )
+                logger.info(f"LLM HTTP status: {response.status_code}")
+                logger.debug(f"LLM raw response: {response.text}")
+                data = response.json()
+                report = data.get('response', '').strip()
+                logger.info(f"LLM report received for source '{source}', length: {len(report)}")
+                with open(report_file, 'a') as f:
+                    f.write(f"\n{'='*80}\n")
+                    f.write(f"Application: {source}\n")
+                    f.write(f"Time Window: {now - timedelta(minutes=15)} to {now}\n")
+                    f.write(f"Log Count: {len(logs)}\n")
+                    f.write(f"LLM Grouped Report:\n{report}\n")
+            except Exception as e:
+                logger.error(f"Failed to generate grouped LLM report for {source}: {e}")
     
     def _is_log_file(self, file_path):
         """Check if file is a log file based on extension or name"""

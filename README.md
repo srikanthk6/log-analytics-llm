@@ -15,7 +15,7 @@ SimpleLLM combines the power of LogAI (for log parsing and anomaly detection) wi
 ## System Requirements
 
 - Python 3.8+
-- Elasticsearch 7.x+ (for log storage and vector search)
+- Elasticsearch 8.x+ (for log storage and vector search)
 - LogAI library
 - Docker (optional, for containerized deployment)
 
@@ -41,18 +41,28 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. Set up Elasticsearch:
+4. Set up Elasticsearch and Kibana with Docker Compose:
 
-Elasticsearch is used for storing log data and performing vector similarity searches. You can:
+Elasticsearch is used for storing log data and performing vector similarity searches. Kibana provides a web UI for exploring and visualizing your logs.
 
-- Install locally: https://www.elastic.co/guide/en/elasticsearch/reference/current/install-elasticsearch.html
-- Use Docker:
+You can use Docker Compose to run both services easily. A sample `docker-compose.yaml` is provided in this repository.
+
+To start Elasticsearch and Kibana:
 
 ```bash
-docker run -d --name elasticsearch -p 9200:9200 -p 9300:9300 \
-  -e "discovery.type=single-node" \
-  -e "xpack.security.enabled=false" \
-  docker.elastic.co/elasticsearch/elasticsearch:7.17.0
+docker compose up -d
+```
+
+- Access Kibana at: [http://localhost:5601](http://localhost:5601)
+- Access Elasticsearch at: [http://localhost:9200](http://localhost:9200)
+
+> **Note:**  
+> For vector search support (such as `knn` queries), Elasticsearch 8.x or later is required and is used in this setup.
+
+To stop the services:
+
+```bash
+docker compose down
 ```
 
 ## Configuration

@@ -1,0 +1,5 @@
+curl -X GET http://localhost:5000/logs/anomalies?threshold=0.8&size=50
+
+curl -X POST http://localhost:5000/logs/query   -H "Content-Type: application/json"   -d '{"query": "database connection failure", "size": 10}'
+
+ curl -X POST http://localhost:5000/logs/analyze   -H "Content-Type: application/json"   -d '{"query": "What caused the system crash?", "size": 5}'
