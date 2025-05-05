@@ -231,7 +231,7 @@ class LLMQueryHandler:
     """
     def __init__(self, es_handler, logai_handler=None):
         self.es_handler = es_handler
-        self.logai_handler = logai_handler or LogAIHandler()
+        self.logai_handler = logai_handler or LogAIHandler(window_size=1)
         
     def analyze_anomalies(self, max_anomalies=5):
         """
@@ -300,7 +300,7 @@ def start_monitoring():
             index_name=ELASTICSEARCH_INDEX
         )
         
-        logai_handler = LogAIHandler(window_size=WINDOW_SIZE)
+        logai_handler = LogAIHandler(window_size=1)
         
         # Create log file handler
         log_file_handler = LogFileHandler(es_handler, logai_handler)

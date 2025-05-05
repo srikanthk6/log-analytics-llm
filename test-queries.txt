@@ -1,6 +1,6 @@
 curl -X GET http://localhost:5000/logs/anomalies?threshold=0.8&size=50
 
-curl -X POST http://localhost:5000/logs/query?human=true   -H "Content-Type: application/json"   -d '{"query": "database connection failure", "size": 10}'
+curl -X POST http://localhost:5000/logs/query?human=true   -H "Content-Type: application/json"   -d '{"query": "trace a44a1431-6001-4933-a6c3-e22b8a32dd51", "size": 10}'
 
  curl -X POST http://localhost:5000/logs/analyze?human=true   -H "Content-Type: application/json"   -d '{"query": "What caused the system crash?", "size": 5}'
 

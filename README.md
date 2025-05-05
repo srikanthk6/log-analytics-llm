@@ -389,6 +389,30 @@ export default ChatbotUI;
 4. Start the React app with `npm start`.
 5. The React app should proxy API requests to your Flask backend (set up `proxy` in `frontend/package.json` if needed).
 
+## E-commerce Log4j2-style Log Generator
+
+This script generates realistic, single-line e-commerce logs in a log4j2-style pattern, including application name, trace ID, order number, amount, order status, hold reason, order lines, and more.
+
+### Usage
+
+```bash
+python generate_ecommerce_logs.py --count 10000 --anomaly-rate 0.1 > ecommerce.log
+```
+- `--count`: Number of logs to generate (default: 20)
+- `--anomaly-rate`: Fraction of logs to be anomalies (default: 0.0)
+
+### Sample Output
+
+```text
+2025-05-05 10:15:23,123 INFO order-service traceId=a1b2c3d4-5678-90ab-cdef-1234567890ab orderNumber=ORD123456 customerId=CUST7890 status=PLACED amount=249.99 lines=[{product=Wireless Mouse,qty=2,price=29.99},{product=Mechanical Keyboard,qty=1,price=189.99}] msg="Order placed by customer CUST7890 for 2x Wireless Mouse, 1x Mechanical Keyboard. Total: $249.99"
+2025-05-05 10:15:25,456 ERROR payment-service traceId=b2c3d4e5-6789-01ab-cdef-2345678901bc orderNumber=ORD123456 customerId=CUST7890 status=ON_HOLD holdReason="Payment Declined" amount=249.99 msg="Payment failed for order ORD123456. Reason: Payment Declined. Order placed on hold."
+2025-05-05 10:17:00,321 INFO shipping-service traceId=d4e5f6a7-8901-23ab-cdef-4567890123de orderNumber=ORD123457 customerId=CUST1234 status=SHIPPED shippingProvider=FedEx trackingNumber=FEDEX123456789 msg="Order ORD123457 shipped via FedEx. Tracking number: FEDEX123456789."
+```
+
+## [Copy script](./generate_ecommerce_logs.py)
+
+---
+
 ## Project Structure
 
 ```

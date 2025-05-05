@@ -51,7 +51,10 @@ class ElasticsearchHandler:
                         "anomaly_score": {"type": "float"},
                         "semantic_template": {"type": "text"},
                         "template": {"type": "text"},
-                        "llm_report": {"type": "text"}
+                        "llm_report": {"type": "text"},
+                        "application_name": {"type": "keyword"},
+                        "trace_id": {"type": "keyword"},
+                        "order_number": {"type": "keyword"}
                     }
                 }
             }
@@ -64,8 +67,8 @@ class ElasticsearchHandler:
             res = self.es.index(index=self.index_name, document=log_data)
             # Only print a sample of the log indexing message occasionally
             import random # For reproducibility
-            if random.random() < 0.01:  # 1% chance to print
-                logger.info(f"POST http://{self.host}:{self.port}/{self.index_name}/_doc [status:{res['result']} duration:~s]")
+            if random.random() < 0.01:
+                logger.info(f"Sampling Data POST http://{self.host}:{self.port}/{self.index_name}/_doc [status:{res['result']} duration:~s]")
             return res
         except Exception as e:
             logger.error(f"Failed to index log: {e}")

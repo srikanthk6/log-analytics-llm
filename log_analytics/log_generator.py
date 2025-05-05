@@ -6,6 +6,8 @@ import time
 import random
 import logging
 import argparse
+import uuid
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -76,7 +78,8 @@ SAMPLE_VALUES = {
     "index_name": ["users_idx", "products_idx", "orders_idx", "audit_log_idx"],
     "disk_usage": [80, 85, 90, 95, 97],
     "id": [1001, 2002, 3003, 4004, 5005],
-    "cache_key": ["user:1001", "product:2002", "settings:site", "config:api"]
+    "cache_key": ["user:1001", "product:2002", "settings:site", "config:api"],
+    "order_number": [f"ORD{str(i).zfill(6)}" for i in range(1000, 1100)]
 }
 
 # Anomalous log patterns
@@ -107,29 +110,36 @@ def generate_timestamp():
     """Generate current timestamp in standard log format"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
 
-def fill_template(template, values_dict):
+# Helper to generate a random trace ID
+def generate_trace_id():
+    return str(uuid.uuid4())
+
+# Helper to get application name from log type
+def get_application_name(log_type):
+    return log_type
+
+# Enhanced fill_template to add application_name, trace_id, and order_number
+def fill_template(template, values_dict, log_type=None):
     """Fill a log template with random values"""
-    # Use a dictionary containing all potential placeholders for the format call
-    format_args = {'timestamp': generate_timestamp()}
-    
-    # Find all placeholders in the template
     import re
+    format_args = {'timestamp': generate_timestamp()}
     placeholders = re.findall(r'\{([^}]+)\}', template)
-    
-    # Add random values for all placeholders found in the template
     for key in placeholders:
         if key != 'timestamp' and key in values_dict:
             format_args[key] = random.choice(values_dict[key])
-    
-    # Format the template with all the collected values
+    # Add new fields
+    format_args['application_name'] = get_application_name(log_type) if log_type else 'unknown_app'
+    format_args['trace_id'] = generate_trace_id()
+    format_args['order_number'] = random.choice(SAMPLE_VALUES['order_number'])
     try:
-        return template.format(**format_args)
+        return template.format(**format_args), format_args
     except KeyError as e:
         # If any placeholders are missing, provide a default value
         missing_key = str(e).strip("'")
         format_args[missing_key] = f"[missing_{missing_key}]"
-        return template.format(**format_args)
+        return template.format(**format_args), format_args
 
+# Write logs as JSON lines with extra fields
 def generate_logs(log_file_path, log_type="application", count=100, interval=0.1, anomaly_probability=0.05):
     """
     Generate random logs and write them to a file
@@ -153,11 +163,18 @@ def generate_logs(log_file_path, log_type="application", count=100, interval=0.1
         for i in range(count):
             if i in anomaly_indices:
                 log_template = random.choice(ANOMALY_PATTERNS)
-                log_line = fill_template(log_template, ALL_VALUES)
+                log_line, extra_fields = fill_template(log_template, ALL_VALUES, log_type)
             else:
                 log_template = random.choice(patterns)
-                log_line = fill_template(log_template, SAMPLE_VALUES)
-            log_file.write(log_line + "\n")
+                log_line, extra_fields = fill_template(log_template, SAMPLE_VALUES, log_type)
+            # Store as JSON with all fields
+            log_json = {
+                "raw": log_line,
+                "application_name": extra_fields["application_name"],
+                "trace_id": extra_fields["trace_id"],
+                "order_number": extra_fields["order_number"]
+            }
+            log_file.write(json.dumps(log_json) + "\n")
             # --- Batch sleep for speed ---
             if interval > 0 and (i + 1) % 1000 == 0:
                 time.sleep(interval)
