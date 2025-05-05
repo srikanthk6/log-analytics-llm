@@ -142,26 +142,25 @@ def generate_logs(log_file_path, log_type="application", count=100, interval=0.1
         anomaly_probability: Probability of generating an anomalous log
     """
     os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-    
     patterns = LOG_PATTERNS.get(log_type, LOG_PATTERNS["application"])
-    
     print(f"Generating {count} logs to {log_file_path}...")
-    
+
+    # --- Accurate anomaly rate logic ---
+    num_anomalies = int(count * anomaly_probability)
+    anomaly_indices = set(random.sample(range(count), num_anomalies)) if num_anomalies > 0 else set()
+
     with open(log_file_path, "a") as log_file:
-        for _ in range(count):
-            # Decide whether to generate a normal log or an anomaly
-            if random.random() < anomaly_probability:
+        for i in range(count):
+            if i in anomaly_indices:
                 log_template = random.choice(ANOMALY_PATTERNS)
                 log_line = fill_template(log_template, ALL_VALUES)
             else:
                 log_template = random.choice(patterns)
                 log_line = fill_template(log_template, SAMPLE_VALUES)
-            
             log_file.write(log_line + "\n")
-            log_file.flush()
-            
-            time.sleep(interval)
-            
+            # --- Batch sleep for speed ---
+            if interval > 0 and (i + 1) % 1000 == 0:
+                time.sleep(interval)
     print(f"Log generation completed. {count} logs written to {log_file_path}")
 
 def parse_args():
