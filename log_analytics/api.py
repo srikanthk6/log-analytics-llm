@@ -13,6 +13,7 @@ from log_analytics.config.config import (
 )
 from log_analytics.elastic_handler import ElasticsearchHandler
 from log_analytics.logai_handler import LogAIHandler
+from log_analytics.human_format import format_log_query_response
 
 # Set up logging
 logging.basicConfig(
@@ -77,16 +78,16 @@ def query_logs():
         data = request.get_json()
         if not data or 'query' not in data:
             return jsonify({"status": "error", "message": "Query parameter is required"}), 400
-            
         query = data['query']
         size = int(data.get('size', 10))
-        
+        human = request.args.get('human', 'false').lower() == 'true'
         # Generate vector from query
         query_vector = logai_handler._generate_vector_embedding(query).tolist()
-        
         # Search similar logs
         similar_logs = es_handler.search_similar_logs(query_vector, top_k=size)
-        
+        if human:
+            api_response = {"results": similar_logs}
+            return format_log_query_response(api_response), 200, {'Content-Type': 'text/plain; charset=utf-8'}
         return jsonify({
             "status": "success",
             "count": len(similar_logs),
@@ -98,26 +99,52 @@ def query_logs():
 
 @app.route('/logs/analyze', methods=['POST'])
 def analyze_logs():
-    """Analyze logs with LLM (placeholder)"""
+    """Analyze logs with LLM (llama3.1 via Ollama)"""
+    import requests
     try:
         data = request.get_json()
         if not data or 'query' not in data:
             return jsonify({"status": "error", "message": "Query parameter is required"}), 400
-            
         query = data['query']
         size = int(data.get('size', 5))
-        
-        # In a production environment, this would:
-        # 1. Find relevant logs based on the query
-        # 2. Send them to an LLM API for analysis
-        # 3. Return the LLM's response
-        
-        # Placeholder response
+        human = request.args.get('human', 'false').lower() == 'true'
+        # Step 1: Find relevant logs using vector search
+        query_vector = logai_handler._generate_vector_embedding(query).tolist()
+        similar_logs = es_handler.search_similar_logs(query_vector, top_k=size)
+        if not similar_logs:
+            if human:
+                return "No relevant logs found.", 200, {'Content-Type': 'text/plain; charset=utf-8'}
+            return jsonify({"status": "success", "analysis": "No relevant logs found.", "logs": []})
+        # Step 2: Format logs for LLM prompt
+        log_context = "\n".join([
+            f"[{log['_source'].get('timestamp', '?')}] [{log['_source'].get('level', '?')}] {log['_source'].get('message', '')}"
+            for log in similar_logs
+        ])
+        prompt = f"""
+You are an expert SRE and log analyst. Analyze the following logs in relation to this query: '{query}'\n\nLOGS:\n{log_context}\n\nProvide a detailed analysis explaining:\n1. What issues are present in these logs\n2. Potential root causes\n3. Recommended actions to resolve any problems\n"""
+        # Step 3: Send prompt to Ollama llama3.1
+        response = requests.post(
+            'http://localhost:11434/api/generate',
+            json={
+                'model': 'llama3.1',
+                'prompt': prompt,
+                'stream': False
+            },
+            timeout=120
+        )
+        if response.status_code == 200:
+            llm_result = response.json().get('response', '').strip()
+        else:
+            llm_result = f"LLM error: {response.status_code} {response.text}"
+        if human:
+            lines = ["LLM Analysis:\n" + llm_result, "\nRelevant Logs:"]
+            api_response = {"results": similar_logs}
+            lines.append(format_log_query_response(api_response))
+            return "\n\n".join(lines), 200, {'Content-Type': 'text/plain; charset=utf-8'}
         return jsonify({
             "status": "success",
-            "analysis": f"Analysis for query: '{query}' would be performed by an LLM in production.",
-            "query": query,
-            "size": size
+            "analysis": llm_result,
+            "logs": [log['_source'] for log in similar_logs]
         })
     except Exception as e:
         logger.error(f"Error analyzing logs: {e}")

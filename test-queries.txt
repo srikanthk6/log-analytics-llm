@@ -1,5 +1,73 @@
 curl -X GET http://localhost:5000/logs/anomalies?threshold=0.8&size=50
 
-curl -X POST http://localhost:5000/logs/query   -H "Content-Type: application/json"   -d '{"query": "database connection failure", "size": 10}'
+curl -X POST http://localhost:5000/logs/query?human=true   -H "Content-Type: application/json"   -d '{"query": "database connection failure", "size": 10}'
 
- curl -X POST http://localhost:5000/logs/analyze   -H "Content-Type: application/json"   -d '{"query": "What caused the system crash?", "size": 5}'
+ curl -X POST http://localhost:5000/logs/analyze?human=true   -H "Content-Type: application/json"   -d '{"query": "What caused the system crash?", "size": 5}'
+
+
+ url -X POST http://localhost:5000/logs/analyze?human=true   -H "Content-Type: application/json"   -d '{"query": "Did fulfillment application went out of memory in last one hour?", "s
+ize": 5}'
+
+
+LLM Analysis:
+**Analysis**
+
+Based on the provided logs, I have analyzed the critical issues reported within the last 15 minutes for each log entry.
+
+### Log Analysis
+
+*   **[2025-05-05T02:25:12.227860] [INFO]**: The application experienced several critical issues within the last 15 minutes.
+    *   Issue(s): Multiple, unspecified (may be related to "data-cleanup" task)
+    *   Root Cause: Unspecified
+*   **[2025-05-05T03:12:30.673671] [INFO]**: The application has experienced several critical issues within the last 15 minutes.
+    *   Issue(s): Multiple, unspecified (may be related to "data-cleanup" task)
+    *   Root Cause: Unspecified
+*   **[2025-05-05T02:26:57.700475] [INFO]**: Within the last 15 minutes, the application has experienced a series of critical issues.
+    *   Issue(s): Multiple, unspecified (may be related to "data-cleanup" task)
+    *   Root Cause: Unspecified
+*   **[2025-05-05T03:13:05.200553] [INFO]**: Within the last 15 minutes, the application has experienced a series of critical issues.
+    *   Issue(s): Multiple, unspecified (may be related to "data-cleanup" task)
+    *   Root Cause: Unspecified
+*   **[2025-05-05T02:28:10.914310] [INFO]**: * Task `data-cleanup` took longer than expected on May 4, 2025 at 20:42:05 and May 4, 2025 at 20:42:06.
+    *   Issue(s): Task "data-cleanup" executed slower than anticipated
+    *   Root Cause: Potential resource constraints (CPU, memory, I/O), inefficient task implementation, or configuration issues
+
+### Out-of-Memory Condition Analysis
+
+To address the initial query regarding whether the fulfillment application went out of memory in the last hour:
+
+*   Based on the logs provided, there is no explicit evidence that the application ran out of memory. However, the slow execution of the "data-cleanup" task might indicate resource constraints.
+*   To investigate this further, consider analyzing system metrics (e.g., CPU, memory usage) and other related data sources.
+
+### Potential Root Causes
+
+Possible root causes for the issues observed in the logs include:
+
+1.  **Resource Constraints**: Insufficient CPU or memory resources leading to slow task execution or failure.
+2.  **Inefficient Task Implementation**: The "data-cleanup" task might be poorly optimized, causing it to consume excessive resources.
+3.  **Configuration Issues**: Incorrect configuration settings may lead to inefficient resource utilization or unexpected behavior.
+
+### Recommended Actions
+
+To resolve the problems identified in these logs:
+
+1.  **Monitor System Resources**: Continuously monitor system metrics (CPU, memory usage) and adjust resource allocation as necessary to prevent similar issues.
+2.  **Optimize Task Implementation**: Review the "data-cleanup" task's implementation and optimize it for efficient execution. This may involve refactoring code, adjusting configuration settings, or applying additional resources.
+3.  **Regular Maintenance**: Schedule regular maintenance tasks (e.g., garbage collection, disk cleanup) to prevent resource buildup and maintain optimal system performance.
+
+By taking these steps, you can proactively address potential issues, improve application performance, and reduce the likelihood of future out-of-memory conditions.
+
+
+Relevant Logs:
+
+1. [2025-05-05T02:25:12.227860] INFO | Score: 1.56 | Anomaly: no
+   The application has experienced several critical issues within the last 15 minutes, including:
+2. [2025-05-05T03:12:30.673671] INFO | Score: 1.56 | Anomaly: no
+   The application has experienced several critical issues within the last 15 minutes, including:
+3. [2025-05-05T02:26:57.700475] INFO | Score: 1.54 | Anomaly: no
+   Within the last 15 minutes, the application has experienced a series of critical issues, including:
+4. [2025-05-05T03:13:05.200553] INFO | Score: 1.54 | Anomaly: no
+   Within the last 15 minutes, the application has experienced a series of critical issues, including:
+5. [2025-05-05T02:28:10.914310] INFO | Score: 1.46 | Anomaly: no
+   * Task `data-cleanup` took longer than expected on May 4, 2025 at 20:42:05 and May 4, 2025 at 20:42:06ubuntu@ip-172-31-41-255:~/simplellm$ 
+

@@ -72,17 +72,21 @@ class ElasticsearchHandler:
             return None
 
     def search_similar_logs(self, vector, top_k=5) -> List[Dict[str, Any]]:
-        """Search for logs similar to the given vector"""
+        """Search for logs similar to the given vector (Elasticsearch 8.x dense_vector compatible)"""
         query = {
-            "knn": {
-                "field": "log_vector",
-                "query_vector": vector,
-                "k": top_k,
-                "num_candidates": 100
+            "size": top_k,
+            "query": {
+                "script_score": {
+                    "query": {"match_all": {}},
+                    "script": {
+                        "source": "cosineSimilarity(params.query_vector, 'log_vector') + 1.0",
+                        "params": {"query_vector": vector}
+                    }
+                }
             }
         }
         try:
-            response = self.es.search(index=self.index_name, query=query)
+            response = self.es.search(index=self.index_name, body=query)
             return response["hits"]["hits"]
         except Exception as e:
             logger.error(f"Error searching similar logs: {e}")
