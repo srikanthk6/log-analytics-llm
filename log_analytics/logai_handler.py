@@ -329,56 +329,27 @@ class LogAIHandler:
                 logger.error(f"Error processing log: {e}")
             raise
 
-    def get_llm_template(self, message: str) -> str:
+    def fast_semantic_template(self, message: str) -> str:
         """
-        Use LLM to generate a semantic template for a log message, with caching and novelty check.
-        Only call LLM if the message is sufficiently different from cached templates.
+        Quickly generate a semantic template using Drain3 (rule-based log parser).
         """
-        # Check Elasticsearch cache first
-        cached = self.es_handler.get_cached_template(message) if hasattr(self, 'es_handler') else None
-        if cached:
-            return cached
-        if message in self.template_cache:
-            return self.template_cache[message]
-        # Similarity check: only call LLM if message is not similar to any cached template
-        from difflib import SequenceMatcher
-        best_match = None
-        best_ratio = 0.0
-        for cached_message, cached_template in self.template_cache.items():
-            ratio = SequenceMatcher(None, message, cached_message).ratio()
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_match = cached_template
-        if best_ratio > 0.70:  # 90% similarity threshold
-            return best_match
-        # If no similar template, call LLM
-        import requests
         try:
-            response = requests.post(
-                'http://localhost:11434/api/generate',
-                json={
-                    'model': self.llm_model_name,
-                    'prompt': f"Extract a log template for the following log message. Replace all PII variable parts (Name, Address, CreditCard, etc.) with <*>. Only output the template string.\nLog: {message}",
-                    'stream': False
-                },
-                timeout=120
-            )
-            data = response.json()
-            template = data['response'].strip().replace('\n', ' ')
-            # Basic cleanup: remove quotes if present
-            if template.startswith('"') and template.endswith('"'):
-                template = template[1:-1]
-            if hasattr(self, 'es_handler'):
-                self.es_handler.cache_template(message, template)
-            self.template_cache[message] = template
-            self.save_template_cache()
-            return template
+            from drain3 import TemplateMiner
+            if not hasattr(self, '_drain3_template_miner'):
+                # Initialize Drain3 TemplateMiner only once
+                self._drain3_template_miner = TemplateMiner()
+            result = self._drain3_template_miner.add_log_message(message)
+            if result and result['template_mined']:
+                return result['template_mined']
+            elif result and result['template']:
+                return result['template']
+            else:
+                return message
         except Exception as e:
-            logger.warning(f"LLM template extraction failed, using raw message: {e}")
-            self.template_cache[message] = message
-            self.save_template_cache()
+            logger.warning(f"Drain3 template extraction failed: {e}")
             return message
 
+    
     def get_recent_logs_for_context(self, es_handler, count=10):
         """
         Retrieve recent logs from Elasticsearch for use as context in LLM prompts.
@@ -391,53 +362,15 @@ class LogAIHandler:
             logger.warning(f"Failed to retrieve recent logs for RAG context: {e}")
             return []
 
-    def get_llm_template_with_rag(self, message: str, es_handler, context_count=10, feedback_count=5) -> str:
+    def get_llm_template_with_rag(self, message: str, es_handler, context_count=10) -> str:
         """
-        Use LLM to generate a semantic template for a log message, with RAG context and caching.
+        Use Drain3 to quickly generate a semantic template for a log message.
         """
         if message in self.template_cache:
             return self.template_cache[message]
-        import requests
-        # Retrieve recent logs for context
-        context_logs = self.get_recent_logs_for_context(es_handler, count=context_count)
-        # Retrieve labeled anomaly examples from feedback file
-        feedback_file = os.path.join(os.getenv("LOG_DIR", "."), "anomaly_feedback.csv")
-        feedback_examples = []
-        if os.path.isfile(feedback_file):
-            import csv
-            with open(feedback_file, newline="") as csvfile:
-                reader = csv.DictReader(csvfile)
-                for row in list(reader)[-feedback_count:]:
-                    feedback_examples.append(f"[ANOMALY] {row.get('message','')}")
-        context_str = "\n".join(context_logs)
-        feedback_str = "\n".join(feedback_examples)
-        prompt = (
-            f"You are an expert log analyst. Here are some recent log messages for context:\n"
-            f"{context_str}\n"
-            f"Here are some known anomaly examples:\n"
-            f"{feedback_str}\n"
-            f"Now, extract a log template for the following log message. Replace all variable parts (numbers, IDs, paths, etc.) with <*>. Only output the template string.\nLog: {message}"
-        )
-        try:
-            response = requests.post(
-                'http://localhost:11434/api/generate',
-                json={
-                    'model': self.llm_model_name,
-                    'prompt': prompt,
-                    'stream': False
-                },
-                timeout=120
-            )
-            data = response.json()
-            template = data['response'].strip().replace('\n', ' ')
-            if template.startswith('"') and template.endswith('"'):
-                template = template[1:-1]
-            self.template_cache[message] = template
-            return template
-        except Exception as e:
-            logger.warning(f"LLM template extraction with RAG failed, using raw message: {e}")
-            self.template_cache[message] = message
-            return message
+        template = self.fast_semantic_template(message)
+        self.template_cache[message] = template
+        return template
 
     def parse_key_value_log(self, log_line: str) -> dict:
         """
@@ -527,7 +460,6 @@ class LogAIHandler:
             log_vector = self._generate_vector_embedding(message)
             if np.linalg.norm(log_vector) == 0:
                 logger.warning("Zero-magnitude vector detected, skipping log indexing.")
-            semantic_template = self.get_llm_template(message)
             if len(self.logs_buffer) >= self.window_size:
                 anomaly_score = self._detect_anomalies()
                 if len(self.logs_buffer) > self.window_size:
@@ -540,7 +472,6 @@ class LogAIHandler:
                 "level": level,
                 "log_vector": log_vector.tolist(),
                 "anomaly_score": float(anomaly_score),
-                "semantic_template": semantic_template,
                 "trace_id": trace_id,
                 "order_number": order_number,
                 "customer_id": customer_id,
@@ -751,53 +682,3 @@ class LogAIHandler:
         except Exception as e:
             logger.exception(f"Error in anomaly detection: {e}")
         return 0.0
-
-    def batch_process_logs(self, log_lines: list, source: str = "application") -> list:
-        """
-        Batch process log lines: group by template, call LLM once per group, cache result.
-        Supports JSON log lines with extra fields.
-        Returns a list of processed log dicts.
-        """
-        from collections import defaultdict
-        processed_logs = []
-        template_groups = []  # List of (template, [logs])
-        import json
-        # Step 1: For each log, normalize abbreviations and group by similar template
-        for log_line in log_lines:
-            # Try to parse as JSON
-            log_data = None
-            if log_line.strip().startswith('{'):
-                try:
-                    log_data = json.loads(log_line)
-                except Exception:
-                    log_data = None
-            if log_data and isinstance(log_data, dict):
-                message = log_data.get("raw", "")
-            else:
-                message = log_line
-            # Use Drain parser to get template (or fallback to message)
-            try:
-                _, _, msg = self._extract_log_metadata(message)
-                cluster = self.parser.match(msg)
-                template = cluster.template if cluster else msg
-            except Exception:
-                template = message
-            template_norm = self.normalize_abbreviations(template)
-            # Try to group with existing templates using string similarity
-            found_group = False
-            for idx, (group_template, group_logs) in enumerate(template_groups):
-                if self.are_strings_similar(template_norm, group_template):
-                    group_logs.append((log_line, template))
-                    found_group = True
-                    break
-            if not found_group:
-                template_groups.append((template_norm, [(log_line, template)]))
-        # Step 2: For each group, call LLM once and cache result
-        for group_template, group in template_groups:
-            log_line, template = group[0]
-            semantic_template = self.get_llm_template(template)
-            for log_line, _ in group:
-                result = self.process_log(log_line, source)
-                result["semantic_template"] = semantic_template
-                processed_logs.append(result)
-        return processed_logs

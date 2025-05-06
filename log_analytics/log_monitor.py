@@ -90,17 +90,24 @@ class LogFileHandler(FileSystemEventHandler):
                             rag_template = self.logai_handler.get_llm_template_with_rag(
                                 processed_log["message"], self.es_handler, context_count=10)
                             processed_log["semantic_template"] = rag_template
+                            #log processed_log variable
+                            import random
+                            if random.randint(0, 100) < 2:  # Log only a small percentage of processed logs
+                                logger.info(f"Processed log: {processed_log}")
+
                             self.es_handler.index_log(processed_log)
                             logger.debug(f"Log: {processed_log['message']} | Anomaly Score: {processed_log['anomaly_score']}")
                             if processed_log['anomaly_score'] > ANOMALY_THRESHOLD:
                                 logger.warning(f"ANOMALY DETECTED: {processed_log['message']} (score: {processed_log['anomaly_score']:.4f})")
-                                self._collect_user_feedback(processed_log)
-                        # After processing all logs, generate grouped LLM reports
-                        self._generate_grouped_llm_reports(processed_logs)
+
+            #Print a logger with ************* to indicate the end of the log file processing
+            logger.info("************* Finished processing log file *************")
 
             # Move processed log file if it's the main ecommerce log
             if os.path.abspath(file_path).endswith(os.path.join('log_analytics', 'logs', 'ecommerce.log')):
-                processed_dir = os.path.join(os.path.dirname(file_path), 'processed')
+                # Place 'processed' folder in the parent directory of 'log_analytics'
+                parent_dir = os.path.dirname(os.path.dirname(file_path))
+                processed_dir = os.path.join(parent_dir, os.path.join('log_analytics','processed'))
                 os.makedirs(processed_dir, exist_ok=True)
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 new_name = f"ecommerce_{timestamp}.log"
@@ -117,80 +124,6 @@ class LogFileHandler(FileSystemEventHandler):
             logger.error(f"Parallel log processing error: {e}")
             return None
     
-    def _collect_user_feedback(self, processed_log):
-        """
-        Append detected anomaly log and its score to a feedback file for future fine-tuning or in-context learning.
-        """
-        feedback_file = os.path.join(LOG_DIR, "anomaly_feedback.csv")
-        import csv
-        file_exists = os.path.isfile(feedback_file)
-        with open(feedback_file, mode="a", newline="") as csvfile:
-            fieldnames = ["timestamp", "message", "source", "level", "anomaly_score", "semantic_template", "is_anomaly"]
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            if not file_exists:
-                writer.writeheader()
-            row = {k: processed_log.get(k, "") for k in fieldnames}
-            row["is_anomaly"] = 1  # Default to 1 (anomaly detected)
-            writer.writerow(row)
-    
-    def _generate_grouped_llm_reports(self, processed_logs):
-        """
-        Generate a single LLM report per application group (source) for logs in the last 15 minutes.
-        """
-        import requests
-        import json
-        from datetime import datetime, timedelta
-        report_file = os.path.join(LOG_DIR, "anomaly_reports.txt")
-        logger.info(f"Writing anomaly group reports to: {os.path.abspath(report_file)}")
-        now = datetime.utcnow()
-        # Group logs by source (application) and filter for last 15 minutes
-        grouped = {}
-
-        for log in processed_logs:
-            try:
-                log_time = datetime.fromisoformat(log.get('timestamp'))
-            except Exception:
-                continue
-            if (now - log_time).total_seconds() > 1296000: # 15 days to seconds 15*24*60*60=1296000
-                continue
-            source = log.get('source', 'unknown')
-            grouped.setdefault(source, []).append(log)
-        for source, logs in grouped.items():            
-            if not logs:
-                continue
-            # Aggregate log details for the group
-            messages = '\n'.join(f"- [{l['timestamp']}] {l['level']}: {l['message']} (score: {l['anomaly_score']})" for l in logs)
-            prompt = (
-                f"You are an expert SRE and log analyst.\n"
-                f"Analyze the following group of anomalous logs from application: {source} in the last 15 minutes.\n"
-                f"Summarize the main issues, possible root causes, and provide actionable suggestions.\n"
-                f"Logs:\n{messages}\n"
-            )
-            logger.info(f"Sending LLM request for source '{source}' with {len(logs)} logs.")
-            logger.debug(f"LLM prompt: {prompt}")
-            try:
-                response = requests.post(
-                    'http://localhost:11434/api/generate',
-                    json={
-                        'model': 'llama3.1',
-                        'prompt': prompt,
-                        'stream': False
-                    },
-                    timeout=120
-                )
-                logger.info(f"LLM HTTP status: {response.status_code}")
-                logger.debug(f"LLM raw response: {response.text}")
-                data = response.json()
-                report = data.get('response', '').strip()
-                logger.info(f"LLM report received for source '{source}', length: {len(report)}")
-                with open(report_file, 'a') as f:
-                    f.write(f"\n{'='*80}\n")
-                    f.write(f"Application: {source}\n")
-                    f.write(f"Time Window: {now - timedelta(minutes=15)} to {now}\n")
-                    f.write(f"Log Count: {len(logs)}\n")
-                    f.write(f"LLM Grouped Report:\n{report}\n")
-            except Exception as e:
-                logger.error(f"Failed to generate grouped LLM report for {source}: {e}")
     
     def _is_log_file(self, file_path):
         """Check if file is a log file based on extension or name"""

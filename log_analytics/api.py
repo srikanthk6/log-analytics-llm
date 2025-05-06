@@ -99,7 +99,7 @@ def query_logs():
         string_hits = []
         if should_clauses:
             es_query = {
-                "size": size,
+                "size": 100,
                 "query": {
                     "bool": {
                         "should": should_clauses,
@@ -115,12 +115,12 @@ def query_logs():
                 string_hits = []
         # Vector search as well
         query_vector = logai_handler._generate_vector_embedding(query).tolist()
-        vector_hits = es_handler.search_similar_logs(query_vector, top_k=size)
+        vector_hits = es_handler.search_similar_logs(query_vector, top_k=100)
         # Combine results, avoiding duplicates (by _id), then take top N unique logs
         all_hits = {}
         for hit in string_hits + vector_hits:
             all_hits[hit['_id']] = hit
-        combined_hits = list(all_hits.values())[:size]
+        combined_hits = list(all_hits.values())
         # Remove 'semantic_template' and 'log_vector' from log data for LLM context, and remove duplicates
         def clean_log_source(src):
             src = dict(src)
@@ -264,7 +264,7 @@ def chat():
             return jsonify({"status": "error", "message": "Message parameter is required"}), 400
         user_message = data['message']
         history = data.get('history', [])  # List of {"role": "user"|"assistant", "content": ...}
-        size = int(data.get('size', 50))
+        size = 500
         # Extract possible ID/keyword tokens from the user message (e.g., UUID, ORD, CUST, etc.)
         tokens = re.findall(r"[a-f0-9\-]{36}|ORD\d+|CUST\d+|\w{6,}", user_message, re.IGNORECASE)
         should_clauses = []
@@ -291,14 +291,18 @@ def chat():
             except Exception as e:
                 logger.error(f"Error in string/OR search: {e}")
                 string_hits = []
-        # Vector search as well
-        query_vector = logai_handler._generate_vector_embedding(user_message).tolist()
-        vector_hits = es_handler.search_similar_logs(query_vector, top_k=size)
+        # If no string hits, then use vector search only
+        if not string_hits:
+            # Vector search as well
+            query_vector = logai_handler._generate_vector_embedding(user_message).tolist()
+            vector_hits = es_handler.search_similar_logs(query_vector, top_k=size)
+        else:
+            vector_hits = []
         # Combine results, avoiding duplicates (by _id), then take top N unique logs
         all_hits = {}
         for hit in string_hits + vector_hits:
             all_hits[hit['_id']] = hit
-        combined_hits = list(all_hits.values())[:size]
+        combined_hits = list(all_hits.values())
 
         # Remove 'semantic_template' and 'log_vector' from log data for LLM context, and remove duplicates
         def clean_log_source(src):
