@@ -10,10 +10,13 @@ import os
 import re
 from difflib import SequenceMatcher
 import json
+import joblib
+import time
+from pyod.models.auto_encoder import AutoEncoder
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 # Update imports with correct class names from LogAI
 from logai.dataloader.data_model import LogRecordObject
-from logai.preprocess.preprocessor import Preprocessor, PreprocessorConfig
 from logai.algorithms.parsing_algo.drain import Drain, DrainParams
 from logai.algorithms.vectorization_algo.tfidf import TfIdf, TfIdfParams
 # Import LogAI's native IsolationForestDetector and its params class
@@ -190,7 +193,73 @@ class LogAIHandler:
         self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
         self.llm_model_name = llm_model_name or os.getenv("LLM_MODEL", "llama3.1")
         self._setup_components()
+        self._load_good_logs_buffer()
         
+        # --- PyOD AutoEncoder and TF-IDF for real-time anomaly detection ---
+        self.tfidf_path = os.path.join(os.path.dirname(__file__), "pyod_tfidf.joblib")
+        self.autoencoder_path = os.path.join(os.path.dirname(__file__), "pyod_autoencoder.joblib")
+        self.tfidf = None
+        self.autoencoder = None
+        self.model_ready = False
+        try:
+            if os.path.exists(self.tfidf_path) and os.path.exists(self.autoencoder_path):
+                self.tfidf = joblib.load(self.tfidf_path)
+                self.autoencoder = joblib.load(self.autoencoder_path)
+                logger.info("Loaded TF-IDF and AutoEncoder models from disk.")
+            else:
+                # Train on good_logs_buffer.log directly
+                buffer_path = os.path.join(os.path.dirname(__file__), 'good_logs_buffer.log')
+                messages = []
+                if os.path.exists(buffer_path):
+                    with open(buffer_path, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                try:
+                                    log_data = self.parse_log_line(line)
+                                    msg = log_data.get("message", log_data.get("raw", ""))
+                                    messages.append(msg)
+                                except Exception as e:
+                                    logger.warning(f"Failed to parse line from good_logs_buffer.log: {e}")
+                if not messages:
+                    messages = ["dummy log message"]
+                logger.info(f"Training TF-IDF and AutoEncoder on {len(messages)} messages from good_logs_buffer.log.")
+                self.tfidf = TfidfVectorizer(max_features=100).fit(messages)
+                X = self.tfidf.transform(messages).toarray()
+                logger.info(f"TF-IDF shape: {X.shape}, dtype: {X.dtype}")
+                if X.shape[0] < 20:
+                    logger.warning(f"Not enough samples ({X.shape[0]}) to train AutoEncoder. Skipping model save.")
+                    self.autoencoder = None
+                else:
+                    try:
+                        self.autoencoder = AutoEncoder()
+                        self.autoencoder.fit(X)
+                        # Check if model is fitted by checking for model_ attribute
+                        if hasattr(self.autoencoder, 'model_'):
+                            logger.info(f"AutoEncoder model_ attribute exists. Model is fitted.")
+                        else:
+                            logger.warning(f"AutoEncoder model_ attribute missing after fit. Model may not be fitted.")
+                        joblib.dump(self.tfidf, self.tfidf_path)
+                        joblib.dump(self.autoencoder, self.autoencoder_path)
+                        logger.info("Trained and saved new TF-IDF and AutoEncoder models from good_logs_buffer.log.")
+                    except Exception as e:
+                        logger.error(f"Exception during AutoEncoder training or saving: {e}")
+                        self.autoencoder = None
+            
+            self.model_ready = True
+        except Exception as e:
+            logger.error(f"Failed to train/load AutoEncoder or TF-IDF: {e}")
+            class DummyModel:
+                def transform(self, X):
+                    return np.zeros((len(X), 100))
+                def decision_function(self, X):
+                    return np.zeros(len(X))
+                def predict(self, X):
+                    return np.zeros(len(X))
+            self.tfidf = DummyModel()
+            self.autoencoder = DummyModel()
+            self.model_ready = True
+
     def load_template_cache(self):
         """Load LLM template cache from file if it exists."""
         if os.path.isfile(CACHE_FILE):
@@ -228,10 +297,6 @@ class LogAIHandler:
         )
         self.feature_extractor = TfIdf(params=tfidf_params)
         
-        # Set up preprocessor with PreprocessorConfig
-        preprocessor_config = PreprocessorConfig()
-        self.preprocessor = Preprocessor(config=preprocessor_config)
-        
         # Create IsolationForestParams object for LogAI's detector
         # Make sure all parameters have the correct type - warm_start must be boolean
         isolation_forest_params = IsolationForestParams(
@@ -249,6 +314,34 @@ class LogAIHandler:
         # Storage for log data
         self.logs_buffer = []
         
+    def _load_good_logs_buffer(self):
+        """Load good logs from good_logs_buffer.log and populate self.logs_buffer."""
+        buffer_path = os.path.join(os.path.dirname(__file__), 'good_logs_buffer.log')
+        if not os.path.exists(buffer_path):
+            logger.warning(f"Good logs buffer file not found: {buffer_path}")
+            return
+        with open(buffer_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                log_data = self.parse_log_line(line)
+                message = log_data.get("message", log_data.get("raw", ""))
+                application_name = log_data.get("application_name", "application")
+                level = log_data.get("level", "INFO")
+                timestamp = self.to_iso8601(log_data.get("timestamp", datetime.now().isoformat()))
+                body_df = pd.DataFrame({'body': [message]})
+                resource_df = pd.DataFrame({'source': [application_name]})
+                severity_text_df = pd.DataFrame({'severity_text': [level]})
+                timestamp_df = pd.DataFrame({'timestamp': [timestamp]})
+                log_record = LogRecordObject(
+                    timestamp=timestamp_df,
+                    body=body_df,
+                    resource=resource_df,
+                    severity_text=severity_text_df
+                )
+                self.logs_buffer.append(log_record)
+
     def normalize_abbreviations(self, text: str) -> str:
         """Expand common abbreviations in a string."""
         def repl(match):
@@ -428,6 +521,13 @@ class LogAIHandler:
         """
         Process a single log line and return a dictionary with only the fixed set of fields.
         """
+        # Wait for model to be ready, up to 5 minutes
+        start_time = time.time()
+        while not getattr(self, "model_ready", False):
+            if time.time() - start_time > 30:
+                logger.error("Model is not ready after 5 minutes. Aborting log processing.")
+                raise RuntimeError("Model is not ready after 5 minutes.")
+            time.sleep(0.5)
         try:
             log_data = self.parse_log_line(log_line)
             # Always normalize fields again to ensure trace_id is present
@@ -455,16 +555,26 @@ class LogAIHandler:
                 resource=resource_df,
                 severity_text=severity_text_df
             )
-            self.logs_buffer.append(log_record)
-            anomaly_score = 0.0
             log_vector = self._generate_vector_embedding(message)
             if np.linalg.norm(log_vector) == 0:
                 logger.warning("Zero-magnitude vector detected, skipping log indexing.")
-            if len(self.logs_buffer) >= self.window_size:
-                anomaly_score = self._detect_anomalies()
-                if len(self.logs_buffer) > self.window_size:
-                    self.logs_buffer = self.logs_buffer[-self.window_size:]
-            # Always return a new dictionary with only the fixed set of fields
+            # --- Real-time anomaly detection using PyOD AutoEncoder ---
+            try:
+                X_new = self.tfidf.transform([message]).toarray()
+                if self.autoencoder is not None:
+                    anomaly_score = float(self.autoencoder.decision_function(X_new)[0])
+                    anomaly_label = int(self.autoencoder.predict(X_new)[0])
+                else:
+                    anomaly_score = 0.0
+                    anomaly_label = 0
+                import random
+                if random.random() < 0.001:
+                    logger.info(f"Anomaly score: {anomaly_score}, Anomaly label: {anomaly_label}")
+            except Exception as e:
+                logger.warning(f"AutoEncoder anomaly detection failed: {e}")
+                anomaly_score = 0.0
+                anomaly_label = 0
+            # ----------------------------------------------------------
             return {
                 "timestamp": timestamp,
                 "message": message,
@@ -472,6 +582,7 @@ class LogAIHandler:
                 "level": level,
                 "log_vector": log_vector.tolist(),
                 "anomaly_score": float(anomaly_score),
+                "anomaly_label": int(anomaly_label),
                 "trace_id": trace_id,
                 "order_number": order_number,
                 "customer_id": customer_id,
@@ -491,6 +602,7 @@ class LogAIHandler:
                 "level": "ERROR",
                 "log_vector": np.zeros(self.embedding_dim).tolist(),
                 "anomaly_score": 0.0,
+                "anomaly_label": 0,
                 "semantic_template": log_line,
                 "trace_id": None,
                 "order_number": None,
@@ -582,103 +694,124 @@ class LogAIHandler:
                 vector = vector / norm
             return vector
     
-    def _detect_anomalies(self) -> float:
+    def _fetch_additional_logs(self, count: int) -> List[str]:
+        """
+        Fetch additional logs from Elasticsearch grouped by application.
+        """
+        logger.info(f"Fetching additional logs from Elasticsearch for context. Count: {count}")
+        from elasticsearch import Elasticsearch
+        es = Elasticsearch()
+        index_name = "logs"  # Replace with your Elasticsearch index name
+        query = {
+            "size": count,
+            "query": {
+                "bool": {
+                    "must": [
+                        {"match": {"level": "INFO"}},
+                        {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}}
+                    ]
+                }
+            },
+            "aggs": {
+                "by_application": {
+                    "terms": {"field": "application_name.keyword"},
+                    "aggs": {
+                        "logs": {
+                            "top_hits": {"size": count}
+                        }
+                    }
+                }
+            }
+        }
+
+        logger.debug(f"Elasticsearch query: {json.dumps(query, indent=2)}")
         try:
-            if getattr(self, '_just_fitted', False):
-                self._just_fitted = False
-                logger.info("Skipping prediction for batch immediately after fit to avoid offset_ error.")
-                return 0.0
-            if len(self.logs_buffer) < 10:
-                return 0.0
-            df = pd.DataFrame([
-                {
-                    'timestamp': log_record.timestamp.iloc[0, 0] if not log_record.timestamp.empty else "",
-                    'message': log_record.body.iloc[0, 0] if not log_record.body.empty else "",
-                    'source': log_record.resource.iloc[0, 0] if not log_record.resource.empty else "",
-                    'level': log_record.severity_text.iloc[0, 0] if not log_record.severity_text.empty else ""
-                } for log_record in self.logs_buffer
-            ])
-            templates = []
-            for message in df['message']:
-                cluster = self.parser.match(message)
-                templates.append(cluster.template if cluster else message)
-            templates = [t for t in templates if isinstance(t, str) and t.strip() and t.strip().lower() not in {"", "the", "a", "an", "and", "or", "is", "are", "was", "were"}]
-            if not templates:
-                logger.warning("No valid templates for TF-IDF. Skipping anomaly detection for this batch.")
-                return 0.0
-            templates_series = pd.Series(templates)
-            # Only fit TF-IDF and IsolationForest if not already fitted and feature count is stable
-            if not hasattr(self, '_tfidf_fitted') or not self._tfidf_fitted:
-                if len(templates_series) == 0:
-                    logger.warning("No templates to fit TF-IDF. Skipping anomaly detection.")
-                    return 0.0
-                self.feature_extractor.fit(templates_series)
-                X = self.feature_extractor.transform(templates_series)
-                if len(X.shape) < 2 or X.shape[1] == 0:
-                    logger.error("TF-IDF transform returned no features. Skipping anomaly detection.")
-                    # logger.info(f"Templates for TF-IDF: {templates}")
-                    return 0.0
-                self._tfidf_fitted = True
-                self._anomaly_feature_count = X.shape[1]
-            X = self.feature_extractor.transform(templates_series)
-            if hasattr(X, 'toarray'):
-                X_array = X.toarray()
-            else:
-                X_array = np.array(X)
-            if X_array.ndim == 1:
-                X_array = X_array.reshape(-1, 1)
-            if X_array.shape[1] == 1 and isinstance(X_array[0, 0], np.ndarray):
-                X_array = np.vstack(X_array[:, 0])
-            try:
-                X_array = X_array.astype(float)
-            except Exception as e:
-                logger.error(f"Failed to convert feature array to float: {e}")
-                return 0.0
-            feature_df = pd.DataFrame(X_array)
-            if feature_df.empty or feature_df.shape[1] == 0:
-                logger.error("Feature DataFrame is empty. Skipping anomaly detection.")
-                return 0.0
-            feature_count = feature_df.shape[1]
-            # Only re-fit if feature count changes
-            if not hasattr(self, '_anomaly_feature_count') or feature_count != self._anomaly_feature_count:
-                isolation_forest_params = IsolationForestParams(
-                    n_estimators=100,
-                    contamination=0.05,
-                    random_state=42,
-                    warm_start=False,
-                    bootstrap=False,
-                    n_jobs=None,
-                    verbose=False
-                )
-                self.anomaly_detector = IsolationForestDetector(params=isolation_forest_params)
-                self.anomaly_detector.fit(feature_df)
-                self._anomaly_feature_count = feature_count
-                self._anomaly_fitted = True
-                self._just_fitted = True
-                logger.info(f"Re-fitted IsolationForest with {feature_count} features. Skipping prediction for this batch.")
-                return 0.0
-            # Only predict if model is fitted and feature count matches
-            if getattr(self, '_anomaly_fitted', False) and feature_count == self._anomaly_feature_count:
-                if hasattr(self.anomaly_detector.model, "offset_"):
-                    try:
-                        result = self.anomaly_detector.predict(feature_df)
-                        if len(result) > 0:
-                            if isinstance(result, pd.DataFrame):
-                                latest_prediction = result.iloc[-1]
-                                if isinstance(latest_prediction, pd.Series) and len(latest_prediction) > 0:
-                                    anomaly_score = 1.0 if latest_prediction.iloc[0] < 0 else 0.0
-                                else:
-                                    anomaly_score = 1.0 if latest_prediction < 0 else 0.0
-                            else:
-                                latest_prediction = result[-1]
-                                anomaly_score = 1.0 if latest_prediction < 0 else 0.0
-                            return anomaly_score
-                    except Exception as e:
-                        logger.exception(f"Error in anomaly detection predict: {e}")
-                        return 0.0
-                else:
-                    logger.info("IsolationForest model not ready (offset_ missing), skipping prediction for this batch.")
-                    return 0.0
+            response = es.search(index=index_name, body=query)
+            logger.debug(f"Elasticsearch response: {json.dumps(response, indent=2)}")
+            logs = []
+            for bucket in response['aggregations']['by_application']['buckets']:
+                for hit in bucket['logs']['hits']['hits']:
+                    logs.append(hit['_source']['message'])
+            return logs
         except Exception as e:
-            logger.exception(f"Error in anomaly detection: {e}")
-        return 0.0
+            logger.warning(f"Failed to fetch logs from Elasticsearch: {e}")
+            return []
+
+    def _detect_anomalies(self, log_line: str) -> float:
+        try:
+            bodies = []
+            for log_record_obj in self.logs_buffer:
+                try:
+                    # Correctly extract scalar values from DataFrames
+                    level_val = str(log_record_obj.severity_text.iloc[0, 0])
+                    msg_val = str(log_record_obj.body.iloc[0, 0])
+                    bodies.append(f"{level_val}: {msg_val}")
+                except Exception as ex_inner:
+                    logger.warning(f"Could not parse log record from buffer: {ex_inner}. Skipping.")
+                    continue
+
+            if len(bodies) < self.window_size:
+                logger.info(f"Not enough logs in buffer ({len(bodies)}) to perform anomaly detection (window: {self.window_size}).")
+                # Attempt to fetch more logs from a backup or external source
+                additional_logs = self._fetch_additional_logs(self.window_size - len(bodies))
+                if additional_logs:
+                    bodies.extend(additional_logs)
+                else:
+                    logger.warning("Unable to fetch additional logs. Skipping anomaly detection.")
+                    return 0.0
+
+            df = pd.DataFrame({'body': bodies})
+            df['body'] = df['body'].astype(str)
+
+            if not hasattr(self, '_feature_extractor_is_fitted') or not self._feature_extractor_is_fitted:
+                if df.shape[0] >= 20:  # Ensure there is enough data to fit
+                    self.feature_extractor.fit(df['body'])
+                    self._feature_extractor_is_fitted = True
+                else:
+                    logger.warning("Insufficient data to fit the feature extractor. Skipping anomaly detection.")
+                    return 0.0
+
+            features = self.feature_extractor.transform(df['body'])
+            if hasattr(features, 'toarray'):
+                features = features.toarray()
+
+            # Ensure features are converted to a numpy array
+            features = np.array(features, dtype=np.float32)
+
+            # Flatten features if they contain sequences
+            if isinstance(features, np.ndarray) and features.ndim > 1:
+                features = np.array([np.ravel(row) for row in features], dtype=np.float32)
+
+            # Log the type and content of features for debugging
+            logger.info(f"Features content: {features}")
+            logger.info(f"Features type: {type(features)}")
+
+            # Handle single sample case
+            if features.ndim == 1:
+                features = features.reshape(1, -1)
+
+            logger.info(f"Features after conversion: {features}")
+            logger.info(f"Features shape after conversion: {features.shape}")
+
+            if not hasattr(self, '_anomaly_detector_is_fitted') or not self._anomaly_detector_is_fitted:
+                if features.shape[0] >= 20:  # Minimum samples required to fit the detector
+                    logger.info(f"Fitting IsolationForestDetector with features of shape {features.shape}...")
+                    try:
+                        self.anomaly_detector.fit(features)
+                        self._anomaly_detector_is_fitted = True
+                    except Exception as e:
+                        logger.error(f"Error fitting IsolationForestDetector: {e}")
+                        return 0.0
+
+            latest_feature = features[-1].reshape(1, -1)
+            score = self.anomaly_detector.predict(latest_feature)
+
+            if isinstance(score, (np.ndarray, list)) and len(score) > 0:
+                return float(score[0])
+            else:
+                logger.warning("Unexpected score format from anomaly detector. Skipping.")
+                return 0.0
+
+        except Exception as e:
+            logger.warning(f"Anomaly detection failed: {e}")
+            return 0.0

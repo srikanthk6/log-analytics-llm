@@ -15,7 +15,7 @@ ELASTICSEARCH_TEMPLATE_INDEX = os.getenv("ELASTICSEARCH_TEMPLATE_INDEX", "semant
 
 # LogAI Configuration
 LOG_DIR = os.getenv("LOG_DIR", "/home/ubuntu/simplellm/log_analytics/logs")
-WATCH_INTERVAL = float(os.getenv("WATCH_INTERVAL", 1000000.0))  # seconds
+WATCH_INTERVAL = float(os.getenv("WATCH_INTERVAL", 40.0))  # seconds
 
 # Anomaly Detection Configuration
 ANOMALY_THRESHOLD = float(os.getenv("ANOMALY_THRESHOLD", 0.8))

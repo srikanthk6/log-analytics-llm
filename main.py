@@ -21,6 +21,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from log_analytics.config.config import LOG_DIR
 from log_analytics.log_monitor import start_monitoring
 from log_analytics.api import start_api
+from log_analytics.elastic_handler import ElasticsearchHandler
 
 # Set up logging
 logging.basicConfig(
@@ -60,9 +61,20 @@ def main():
     os.makedirs(LOG_DIR, exist_ok=True)
     
     # Always generate a new log file at startup
-    log_gen_cmd = "python3 generate_ecommerce_logs.py --count 1000 --anomaly-rate 0.2"
+    log_gen_cmd = "python3 generate_ecommerce_logs.py --count 200 --anomaly-rate 0.1"
     logger.info(f"Generating new log file with: {log_gen_cmd}")
     os.system(log_gen_cmd)
+    
+    # Initialize ElasticsearchHandler
+    es_handler = ElasticsearchHandler()
+
+    # Create and start an anomaly detection job
+    job_id = "log_anomaly_detection"
+    index_pattern = "logs_vector_index"
+    field_name = "anomaly_score"
+    bucket_span = "5m"
+
+    # es_handler.create_anomaly_detection_job(job_id, index_pattern, field_name, bucket_span)
     
     # Store processes to manage
     processes = []
@@ -90,7 +102,7 @@ def main():
         # Wait for all processes to complete (which they won't unless terminated)
         for process in processes:
             process.join()
-            
+    
     except KeyboardInterrupt:
         logger.info("Shutting down...")
         
@@ -104,5 +116,19 @@ def main():
         
     return 0
 
+    
+
+# def stop_server(server_thread):
+#     time.sleep(10)
+#     print("Stopping server")
+#     server_thread.interrupt()
+#     server_thread.join(timeout=3)
+#     if server_thread.is_alive():
+#         print("Server thread did not terminate in time!")
+
 if __name__ == "__main__":
     sys.exit(main())
+    # server_thread = threading.Thread(target=main, daemon=True)
+    # server_thread.start()
+    # stop_server(server_thread)
+

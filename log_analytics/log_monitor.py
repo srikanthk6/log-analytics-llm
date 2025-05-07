@@ -42,13 +42,18 @@ class LogFileHandler(FileSystemEventHandler):
         self.logai_handler = logai_handler
         self.file_positions = {}  # Track file positions to read only new content
         
-    def on_modified(self, event):
-        """Handle file modification events"""
-        if not event.is_directory:
-            self._process_log_file(event.src_path)
+    # def on_modified(self, event):
+    #     """Handle file modification events"""
+    #      # Delay 10 secs to ensure file is fully modified
+    #     logger.info(f"Sleeping for 10 seconds to ensure file is fully modified")
+    #     if not event.is_directory:
+    #         self._process_log_file(event.src_path)
             
     def on_created(self, event):
         """Handle file creation events"""
+         # Delay 10 secs to ensure file is fully created
+        logger.info(f"Sleeping for 10 seconds to ensure file is fully created")
+        time.sleep(10)
         if not event.is_directory:
             logger.info(f"New log file detected: {event.src_path}")
             self._process_log_file(event.src_path)
@@ -60,8 +65,8 @@ class LogFileHandler(FileSystemEventHandler):
             if not self._is_log_file(file_path):
                 return
 
-            # Get last known position or start from beginning
-            last_pos = self.file_positions.get(file_path, 0)
+            # Always start reading from the first position of the file
+            last_pos = 0
 
             with open(file_path, 'r') as f:
                 # Seek to last known position
@@ -93,12 +98,12 @@ class LogFileHandler(FileSystemEventHandler):
                             #log processed_log variable
                             import random
                             if random.randint(0, 100) < 2:  # Log only a small percentage of processed logs
-                                logger.info(f"Processed log: {processed_log}")
+                                logger.debug(f"Processed log: {processed_log}")
 
                             self.es_handler.index_log(processed_log)
                             logger.debug(f"Log: {processed_log['message']} | Anomaly Score: {processed_log['anomaly_score']}")
                             if processed_log['anomaly_score'] > ANOMALY_THRESHOLD:
-                                logger.warning(f"ANOMALY DETECTED: {processed_log['message']} (score: {processed_log['anomaly_score']:.4f})")
+                                logger.debug(f"ANOMALY DETECTED: {processed_log['message']} (score: {processed_log['anomaly_score']:.4f})")
 
             #Print a logger with ************* to indicate the end of the log file processing
             logger.info("************* Finished processing log file *************")

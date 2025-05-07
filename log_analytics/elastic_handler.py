@@ -5,7 +5,7 @@ from elasticsearch import Elasticsearch
 import json
 import logging
 from typing import Dict, List, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class ElasticsearchHandler:
             mapping = {
                 "mappings": {
                     "properties": {
-                        "timestamp": {"type": "date"},
+                        "timestamp": {"type": "date", "format": "yyyy-MM-dd'T'HH:mm:ss.SSSZ"},
                         "message": {"type": "text"},
                         "log_vector": {
                             "type": "dense_vector",
@@ -62,9 +62,24 @@ class ElasticsearchHandler:
             self.es.indices.create(index=self.index_name, body=mapping)
             logger.info(f"Created index: {self.index_name}")
 
+    def _format_es_timestamp(self, dt):
+        if isinstance(dt, str):
+            try:
+                dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
+            except Exception:
+                dt = datetime.utcnow().replace(tzinfo=timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+0000"
+
     def index_log(self, log_data: Dict[str, Any]) -> None:
         """Index a log entry with vector embedding"""
         try:
+            # Ensure timestamp is in correct format
+            if 'timestamp' in log_data:
+                log_data['timestamp'] = self._format_es_timestamp(log_data['timestamp'])
+            else:
+                log_data['timestamp'] = self._format_es_timestamp(datetime.utcnow())
             res = self.es.index(index=self.index_name, document=log_data)
             # Only print a sample of the log indexing message occasionally
             import random # For reproducibility
@@ -75,13 +90,26 @@ class ElasticsearchHandler:
             logger.error(f"Failed to index log: {e}")
             return None
 
-    def search_similar_logs(self, vector, top_k=5) -> List[Dict[str, Any]]:
-        """Search for logs similar to the given vector (Elasticsearch 8.x dense_vector compatible)"""
+    def search_similar_logs(self, vector, top_k=5, min_dt=None, max_dt=None) -> List[Dict[str, Any]]:
+        """Search for logs similar to the given vector (Elasticsearch 8.x dense_vector compatible), with optional date range filter."""
+        # Build the base query
+        base_query = {"match_all": {}}
+        # Add date range filter if present
+        if min_dt and max_dt:
+            min_dt_str = self._format_es_timestamp(min_dt)
+            max_dt_str = self._format_es_timestamp(max_dt)
+            base_query = {
+                "bool": {
+                    "filter": [
+                        {"range": {"timestamp": {"gte": min_dt_str, "lte": max_dt_str}}}
+                    ]
+                }
+            }
         query = {
             "size": top_k,
             "query": {
                 "script_score": {
-                    "query": {"match_all": {}},
+                    "query": base_query,
                     "script": {
                         "source": "cosineSimilarity(params.query_vector, 'log_vector') + 1.0",
                         "params": {"query_vector": vector}
@@ -144,7 +172,7 @@ class ElasticsearchHandler:
     def cache_template(self, template: str, semantic_template: str):
         """Store LLM template in Elasticsearch for future reuse."""
         try:
-            doc = {"semantic_template": semantic_template, "template": template, "timestamp": datetime.utcnow().isoformat()}
+            doc = {"semantic_template": semantic_template, "template": template, "timestamp": self._format_es_timestamp(datetime.utcnow())}
             self.es.index(index=self.template_index_name, document=doc)
         except Exception as e:
             logger.warning(f"Failed to cache template: {e}")
@@ -164,7 +192,7 @@ class ElasticsearchHandler:
     def cache_embedding(self, message: str, log_vector):
         """Store embedding in Elasticsearch for future reuse."""
         try:
-            doc = {"message": message, "log_vector": log_vector, "timestamp": datetime.utcnow().isoformat()}
+            doc = {"message": message, "log_vector": log_vector, "timestamp": self._format_es_timestamp(datetime.utcnow())}
             self.es.index(index=self.index_name, document=doc)
         except Exception as e:
             logger.warning(f"Failed to cache embedding: {e}")
@@ -184,7 +212,51 @@ class ElasticsearchHandler:
     def cache_llm_report(self, message: str, llm_report: str):
         """Store LLM anomaly report in Elasticsearch for future reuse."""
         try:
-            doc = {"message": message, "llm_report": llm_report, "timestamp": datetime.utcnow().isoformat()}
+            doc = {"message": message, "llm_report": llm_report, "timestamp": self._format_es_timestamp(datetime.utcnow())}
             self.es.index(index=self.index_name, document=doc)
         except Exception as e:
             logger.warning(f"Failed to cache LLM report: {e}")
+
+    def create_anomaly_detection_job(self, job_id, index_pattern, field_name, bucket_span="5m"):
+        """Create an anomaly detection job in Elasticsearch."""
+        job_config = {
+            "description": f"Anomaly detection for {field_name} in {index_pattern}",
+            "analysis_config": {
+                "bucket_span": bucket_span,
+                "detectors": [
+                    {
+                        "function": "mean",
+                        "field_name": field_name
+                    }
+                ]
+            },
+            "data_description": {
+                "time_field": "@timestamp"
+            }
+        }
+
+        # Check if the job already exists
+        response = self.es.transport.perform_request(
+            "GET",
+            f"/_ml/anomaly_detectors/{job_id}"
+        )
+        if hasattr(response, 'status_code') and response.status_code == 200:
+            logger.info(f"Anomaly detection job {job_id} already exists.")
+            return
+
+        # Create the job
+        response = self.es.transport.perform_request(
+            "PUT",
+            f"/_ml/anomaly_detectors/{job_id}",
+            headers={"Content-Type": "application/json"},
+            body=job_config
+        )
+        logger.info(f"Created anomaly detection job {job_id}: {response}")
+
+        # Start the job
+        response = self.es.transport.perform_request(
+            "POST",
+            f"/_ml/anomaly_detectors/{job_id}/_open",
+            headers={"Content-Type": "application/json"}
+        )
+        logger.info(f"Started anomaly detection job {job_id}: {response}")
