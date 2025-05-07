@@ -7,3 +7,6 @@ numpy
 pytest
 sentence-transformers
 flask-cors
+flask
+python-dateutil
+requests
